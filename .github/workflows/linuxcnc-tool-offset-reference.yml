@@ -1,0 +1,38 @@
+name: LinuxCNC tool offset reference
+on: workflow_dispatch
+permissions:
+  contents: read
+jobs:
+  reference:
+    runs-on: ubuntu-latest
+    container: debian:trixie
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install LinuxCNC interpreter
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends linuxcnc-uspace coreutils
+      - name: Compare zero and nonzero tool offsets
+        shell: bash
+        run: |
+          printf '[TRAJ]\nLINEAR_UNITS = mm\n' > /tmp/reference.ini
+          cat > /tmp/tool-offset-reference.ngc <<'NC'
+          (LinuxCNC 2.9.4 nonzero tool offset reference)
+          G18 G8 G21 G90
+          T1 M6
+          G0 X10 Z10
+          G43
+          G1 X5 F100
+          G91 G1 Z-2
+          G90
+          G49
+          G1 Z0
+          M2
+          NC
+          for offset in zero nonzero; do
+            if [ "$offset" = zero ]; then x=0; z=0; else x=2; z=3; fi
+            printf 'T1 P1 X%s Z%s D0.4 Q2\n' "$x" "$z" > /tmp/reference-tool.tbl
+            echo "--- $offset (X$x Z$z) ---"
+            timeout 30s rs274 -i /tmp/reference.ini -g -t /tmp/reference-tool.tbl /tmp/tool-offset-reference.ngc
+          done
