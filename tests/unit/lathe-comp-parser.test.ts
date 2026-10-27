@@ -85,6 +85,7 @@ it('keeps physical positions consistent through G43 and G92 changes',()=>{
  expect(result.segments.map(s=>[s.start.x,s.start.z,s.end.x,s.end.z])).toEqual([[-2,-3,8,7],[8,7,5,5],[5,5,4,5]]);
 });
 it('uses a distinct H offset without treating it as the physical tool size',()=>{
+ // LinuxCNC 2.9.4 canonical offset and positions: https://github.com/good5229/nc_tracer/actions/runs/40534348246
  const code='G18 G8 G21 G90\nT1 M6\nG0 X10 Z10\nG43 H2\nG1 X5 F100\nG49\nG1 Z0\nM2';
  const table={...settings,linuxcncLatheToolReference:{tools:{'1':{diameter:.4,orientation:2,offsetX:2,offsetZ:3},'2':{diameter:.4,orientation:2,offsetX:4,offsetZ:6}}}};
  const result=parseGcode(code,table);expect(result.status).toBe('SUPPORTED');
