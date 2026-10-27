@@ -102,10 +102,12 @@ test('recalculates the original thread preview with chosen example tool dimensio
 });
 
 test('reports an example holder overlap in the original thread preview',async({page})=>{
- await page.goto('/');await page.getByLabel('LinuxCNC 데모').selectOption('lathe-g76.ngc');const region=page.getByRole('region',{name:'선반 예제 소재 형상'});
+ test.setTimeout(60000);await page.goto('/');await page.getByLabel('LinuxCNC 데모').selectOption('lathe-g76.ngc');const region=page.getByRole('region',{name:'선반 예제 소재 형상'});
  await region.getByLabel('직사각형 예제 홀더 간섭 검사').check();await region.getByRole('button',{name:'점 공구 경로의 가상 형상 계산'}).click();
  await expect(region.getByRole('status')).toContainText('제거된 3D 격자',{timeout:30000});await expect(region).toContainText('예제 홀더와 소재의 간섭 가능성');
  await expect(region).toContainText('행 113 T9');await expect(region).toContainText('실제 충돌 판정이 아닙니다');await expect(region.getByLabel('선반 예제 소재 3D 표시')).toBeVisible();
+ await region.getByLabel('홀더 Y 최소 (mm)').fill('-1');await region.getByLabel('홀더 Y 최대 (mm)').fill('1');await region.getByRole('button',{name:'점 공구 경로의 가상 형상 계산'}).click();
+ await expect(region).toContainText('Y -1~1mm',{timeout:30000});await expect(region).toContainText('모든 회전 위치의 겹침 가능성');
  await region.getByLabel('홀더 설정 대상').selectOption('9');
  await region.getByLabel('홀더 X 최소 (mm)').fill('30');await region.getByLabel('홀더 X 최대 (mm)').fill('32');await region.getByLabel('홀더 Z 최소 (mm)').fill('30');await region.getByLabel('홀더 Z 최대 (mm)').fill('32');
  await region.getByRole('button',{name:'점 공구 경로의 가상 형상 계산'}).click();await expect(region).toContainText('T9: X 30~32mm',{timeout:30000});await expect(region).not.toContainText('행 113 T9');

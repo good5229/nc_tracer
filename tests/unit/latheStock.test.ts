@@ -304,3 +304,27 @@ it('agrees with exhaustive discrete spindle events for synchronized holder overl
   expect(Boolean(shape.holderContacts?.length),`sample ${sample}`).toBe(expected);
  }
 });
+it('checks a 3D holder box against rotating stock away from the X/Z plane',()=>{
+ const code='G21 G90 G18 G8\nT1 M6\nG0 X12 Z0\nG0 Z-3\nG1 X8 F100\nM2',parsed=parseGcode(code,options),template=parsed.segments.find(s=>s.motion==='G01')!;
+ const stationary={...template,start:{x:-.2,y:0,z:-3.2},end:{x:-.2,y:0,z:-3.2}},one={...parsed,segments:[stationary]};
+ const grid={radius:5,zMin:-5,zMax:0,step:.2,radialCells:25,axialCells:25,angularSegments:12};
+ const shape=simulateLatheStock(one,options,'round-nose',grid,false,{}, {},undefined,{}, {xMin:0,xMax:1,yMin:3,yMax:4,zMin:-.5,zMax:.5});
+ if(!shape.ok)throw new Error(shape.message);expect(shape.holderContacts?.length).toBeGreaterThan(0);expect(shape.holderContacts![0].radius).toBeGreaterThanOrEqual(3);
+ const far=simulateLatheStock(one,options,'round-nose',grid,false,{}, {},undefined,{}, {xMin:0,xMax:1,yMin:6,yMax:7,zMin:-.5,zMax:.5});
+ if(!far.ok)throw new Error(far.message);expect(far.holderContacts).toBeUndefined();expect(far.remaining).toEqual(shape.remaining);
+ expect(simulateLatheStock(one,options,'round-nose',grid,false,{}, {},undefined,{}, {xMin:0,xMax:1,yMin:2,yMax:1,zMin:-.5,zMax:.5})).toMatchObject({ok:false,message:expect.stringContaining('홀더')});
+});
+it('agrees with angular samples for 3D holder boxes on a stationary tool',()=>{
+ const code='G21 G90 G18 G8\nT1 M6\nG0 X12 Z0\nG0 Z-3\nG1 X8 F100\nM2',parsed=parseGcode(code,options),template=parsed.segments.find(s=>s.motion==='G01')!;
+ const stationary={...template,start:{x:-.2,y:0,z:-3.2},end:{x:-.2,y:0,z:-3.2}},one={...parsed,segments:[stationary]};
+ const grid={radius:5,zMin:-5,zMax:0,step:.2,radialCells:25,axialCells:25,angularSegments:12};let seed=781;const random=()=>{seed=(1664525*seed+1013904223)>>>0;return seed/2**32;};
+ for(let i=0;i<40;i++){
+  const xMin=-6+12*random(),yMin=-6+12*random(),holder={xMin,xMax:xMin+.4+random()*2,yMin,yMax:yMin+.4+random()*2,zMin:-.5,zMax:.5};
+  let expected=false;for(let r=0;r<grid.radialCells&&!expected;r++)for(let angle=0;angle<3600;angle++){
+   const radius=(r+.5)*grid.step,theta=2*Math.PI*angle/3600,x=radius*Math.cos(theta),y=radius*Math.sin(theta);
+   if(x>=holder.xMin&&x<=holder.xMax&&y>=holder.yMin&&y<=holder.yMax){expected=true;break;}
+  }
+  const shape=simulateLatheStock(one,options,'round-nose',grid,false,{}, {},undefined,{},holder);if(!shape.ok)throw new Error(shape.message);
+  expect(Boolean(shape.holderContacts?.length),`box ${i}`).toBe(expected);
+ }
+});

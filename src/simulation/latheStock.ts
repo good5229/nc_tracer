@@ -19,9 +19,10 @@ export type LatheStockResult={ok:true;holderContacts?:HolderContact[];contact?:L
 export type LatheInsertModel='round-nose'|'example-insert';
 /** Q2 insert section, relative to the circular nose center, in mm. */
 export type LatheInsertShape={xExtent:number;zNear:number;zFar:number};
-/** Example rectangular holder section relative to the tool reference. */
-export type LatheHolderShape={xMin:number;xMax:number;zMin:number;zMax:number};
-const validHolder=(s:LatheHolderShape)=>[s.xMin,s.xMax,s.zMin,s.zMax].every(Number.isFinite)&&s.xMin<s.xMax&&s.zMin<s.zMax&&[s.xMin,s.xMax,s.zMin,s.zMax].every(v=>Math.abs(v)<=50);
+/** Example axis-aligned holder box relative to the tool reference; missing Y is zero. */
+export type LatheHolderShape={xMin:number;xMax:number;yMin?:number;yMax?:number;zMin:number;zMax:number};
+const validHolder=(s:LatheHolderShape)=>[s.xMin,s.xMax,s.yMin??0,s.yMax??0,s.zMin,s.zMax].every(Number.isFinite)&&s.xMin<s.xMax&&(s.yMin??0)<=(s.yMax??0)&&s.zMin<s.zMax&&[s.xMin,s.xMax,s.yMin??0,s.yMax??0,s.zMin,s.zMax].every(v=>Math.abs(v)<=50);
+const intervalDistance=(min:number,max:number)=>min<=0&&max>=0?0:Math.min(Math.abs(min),Math.abs(max));
 export const DEFAULT_LATHE_INSERT:LatheInsertShape={xExtent:2,zNear:1,zFar:2};
 /** Rectangular cutting blade, tip centered at the programmed X/Z point. */
 export type PartingToolShape={width:number;length:number};
@@ -76,26 +77,40 @@ export function simulateLatheStock(result:ParseResult,options:ParserOptions,mode
   if(!holder||holderContacts.some(c=>c.sourceLine===segment.sourceLine&&c.tool===segment.tool&&c.motion===segment.motion))return true;
   const polygon=sweptPolygon(a,b,[{x:holder.xMin,z:holder.zMin},{x:holder.xMax,z:holder.zMin},{x:holder.xMax,z:holder.zMax},{x:holder.xMin,z:holder.zMax}]);
   const eps=1e-7,minX=Math.min(...polygon.map(p=>p.x))-eps,maxX=Math.max(...polygon.map(p=>p.x))+eps,minZ=Math.min(...polygon.map(p=>p.z))-eps,maxZ=Math.max(...polygon.map(p=>p.z))+eps;
-  const minR=minX<=0&&maxX>=0?0:Math.min(Math.abs(minX),Math.abs(maxX)),maxR=Math.max(Math.abs(minX),Math.abs(maxX));
+  const yMin=holder.yMin??0,yMax=holder.yMax??0,hasY=yMin!==0||yMax!==0,timed=hasY?undefined:sync;
+  const minR=Math.hypot(intervalDistance(minX,maxX),intervalDistance(yMin,yMax)),maxR=Math.hypot(Math.max(Math.abs(minX),Math.abs(maxX)),Math.max(Math.abs(yMin),Math.abs(yMax)));
   const r0=Math.max(0,Math.ceil(minR/step-.5)),r1=Math.min(nr-1,Math.floor(maxR/step-.5)),z0=Math.max(0,Math.ceil((minZ-zMin)/step-.5)),z1=Math.min(nz-1,Math.floor((maxZ-zMin)/step-.5));
   work+=Math.max(0,r1-r0+1)*Math.max(0,z1-z0+1)*8;if(work>120_000_000)return false;
   for(let z=z0;z<=z1;z++)for(let r=r0;r<=r1;r++){
    const x=(r+.5)*step,pz=zMin+(z+.5)*step;
-   if(!insideConvex({x,z:pz},polygon)&&!insideConvex({x:-x,z:pz},polygon))continue;
-   work+=angular*(sync?16:1);if(work>120_000_000)return false;
-   const plusInterval=sync?movingBoxInterval({x,z:pz},a,b,{xMin:holder.xMin-1e-10,xMax:holder.xMax+1e-10,zMin:holder.zMin-1e-10,zMax:holder.zMax+1e-10}):null;
-   const minusInterval=sync?movingBoxInterval({x:-x,z:pz},a,b,{xMin:holder.xMin-1e-10,xMax:holder.xMax+1e-10,zMin:holder.zMin-1e-10,zMax:holder.zMax+1e-10}):null;
-   const cuttingIntervals=sync?threadToolIntervals({x,z:pz},a,b,sync.length,sync.halfAngle,sync.tipRadius):[];
+   if(hasY){
+    // Slice the swept X/Z box at this Z, then ask whether any rotation
+    // of the stock radius intersects that X/Y rectangle. This deliberately
+    // ignores timing and is a conservative potential contact.
+    const xs:number[]=[];
+    for(let i=0;i<polygon.length;i++){
+     const u=polygon[i],v=polygon[(i+1)%polygon.length];
+     if(Math.abs(v.z-u.z)<1e-12){if(Math.abs(pz-u.z)<=eps)xs.push(u.x,v.x);}
+     else {const q=(pz-u.z)/(v.z-u.z);if(q>=-1e-10&&q<=1+1e-10)xs.push(u.x+q*(v.x-u.x));}
+    }
+    if(!xs.length)continue;
+    const lo=Math.min(...xs),hi=Math.max(...xs),near=Math.hypot(intervalDistance(lo,hi),intervalDistance(yMin,yMax)),far=Math.hypot(Math.max(Math.abs(lo),Math.abs(hi)),Math.max(Math.abs(yMin),Math.abs(yMax)));
+    if(x<near-eps||x>far+eps)continue;
+   }else if(!insideConvex({x,z:pz},polygon)&&!insideConvex({x:-x,z:pz},polygon))continue;
+   work+=angular*(timed?16:1);if(work>120_000_000)return false;
+   const plusInterval=timed?movingBoxInterval({x,z:pz},a,b,{xMin:holder.xMin-1e-10,xMax:holder.xMax+1e-10,zMin:holder.zMin-1e-10,zMax:holder.zMax+1e-10}):null;
+   const minusInterval=timed?movingBoxInterval({x:-x,z:pz},a,b,{xMin:holder.xMin-1e-10,xMax:holder.xMax+1e-10,zMin:holder.zMin-1e-10,zMax:holder.zMax+1e-10}):null;
+   const cuttingIntervals=timed?threadToolIntervals({x,z:pz},a,b,timed.length,timed.halfAngle,timed.tipRadius):[];
    for(let angle=0;angle<angular;angle++)if(remaining[index(r,z,angle)]){
-    if(sync){
-     const span=sync.end-sync.start,tolerance=1/(2*angular),phase=-sync.direction*(angle+.5)/angular;
+    if(timed){
+     const span=timed.end-timed.start,tolerance=1/(2*angular),phase=-timed.direction*(angle+.5)/angular;
      const earliest=(interval:[number,number]|null,atPhase:number)=>{
       if(!interval)return Infinity;
-      const low=sync.start+interval[0]*span-(interval[0]===0?tolerance:0),high=sync.start+interval[1]*span+(interval[1]===1?tolerance:0);
+      const low=timed.start+interval[0]*span-(interval[0]===0?tolerance:0),high=timed.start+interval[1]*span+(interval[1]===1?tolerance:0);
       const time=atPhase+Math.ceil(low-atPhase-1e-12);
-      return time<=high+1e-12?Math.max(sync.start,Math.min(sync.end,time)):Infinity;
+      return time<=high+1e-12?Math.max(timed.start,Math.min(timed.end,time)):Infinity;
      };
-     const hit=Math.min(earliest(plusInterval,phase),earliest(minusInterval,phase-sync.direction*.5));
+     const hit=Math.min(earliest(plusInterval,phase),earliest(minusInterval,phase-timed.direction*.5));
      if(!Number.isFinite(hit))continue;
      const cut=Math.min(...cuttingIntervals.map(interval=>earliest(interval,phase)));
      if(cut<hit-1e-10)continue;
