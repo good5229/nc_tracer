@@ -37,6 +37,14 @@ it('matches the G42 convex arc reference',()=>{
  const expected=[['G00',-10,1],['G01',-4.1671,-.0027],['G03',-4,-.2],['G03',-6.2,-2.4],['G03',-6.2485,-2.394],['G01',-10.2485,-1.394],['G00',-11,-1]] as const;
  expect(result.segments).toHaveLength(expected.length);result.segments.forEach((segment,i)=>{expect(segment.motion).toBe(expected[i][0]);expect(segment.end.x).toBeCloseTo(expected[i][1],4);expect(segment.end.z).toBeCloseTo(expected[i][2],4);});
 });
+it.each([
+ ['lathe_comp_line_arc_concave',[['G00',10,1],['G01',4.0079,-.3681],['G02',5.8,-2],['G01',9.8,-2],['G00',11,-2]]],
+ ['lathe_comp_arc_line_concave',[['G00',10,1],['G01',3.8,1],['G02',3.6,.8],['G01',3.6,-.2],['G02',5.7748,-2.3999],['G01',9.7515,-3.394],['G00',11,-3]]],
+] as const)('matches LinuxCNC for %s',(name,expected)=>{
+ const source=readFileSync(new URL(`../fixtures/${name}.ngc`,import.meta.url),'utf8');
+ const result=parseGcode(source,settings);expect(result.warnings).toEqual([]);expect(result.status).toBe('SUPPORTED');
+ expect(result.segments).toHaveLength(expected.length);result.segments.forEach((segment,i)=>{expect(segment.motion).toBe(expected[i][0]);expect(segment.end.x).toBeCloseTo(expected[i][1],4);expect(segment.end.z).toBeCloseTo(expected[i][2],4);});
+});
 it('uses the explicitly loaded tool table for G41 and rejects unknown offsets',()=>{
  const source=readFileSync(new URL('../fixtures/lathe_comp_left.ngc',import.meta.url),'utf8').replace('G41.1 D0.4 L2','T11 M6\nG43\nG41');
  const table={...settings,linuxcncLatheToolReference:{tools:{'11':{diameter:.4,orientation:2,offsetX:0,offsetZ:0}}}};

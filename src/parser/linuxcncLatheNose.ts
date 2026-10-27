@@ -40,7 +40,7 @@ const times=(a:LatheNosePoint,k:number):LatheNosePoint=>({x:a.x*k,z:a.z*k});
 
 /**
  * G18 compensation with line-to-line lookahead and bounded arc corners.
- * Concave arc corners and tool-length offsets are not supported.
+ * Arc/arc corners and tool-length offsets are not supported.
  * The parser handles G40 transitions and control flow separately.
  */
 export function linuxCncLatheNoseLines(start:LatheNosePoint,lines:LatheInputMove[],diameter:number,side:'left'|'right',orientation:number):LatheCompLines {
@@ -102,10 +102,38 @@ export function linuxCncLatheNoseLines(start:LatheNosePoint,lines:LatheInputMove
   const tangentArc=isArc||previousArc;
   const tangent=tangentArc && Math.abs(turn)<=1e-12 && dot>0;
   if(tangent && Math.hypot(nextStart.x-center.x,nextStart.z-center.z)>1e-9)return error('UNRESOLVED_ARC_JUNCTION',line.sourceLine);
-  if(tangentArc && !tangent && (dot<0 && Math.abs(turn)<=1e-12 || turn*sign>=0))return error('UNSUPPORTED_ARC_CORNER',line.sourceLine);
+  if(tangentArc && !tangent && dot<0 && Math.abs(turn)<=1e-12)return error('UNSUPPORTED_ARC_CORNER',line.sourceLine);
   if(tangentArc && !tangent && (previousArc && isArc || line.motion==='G00'))return error('UNSUPPORTED_ARC_CORNER',line.sourceLine);
   if(!tangent && turn!==0 && (cornerAngle<=0.01 || Math.PI-cornerAngle<=0.01))return error('UNSUPPORTED_CORNER_TOLERANCE',line.sourceLine);
-  if(!tangentArc && turn!==0 && turn*sign>0){
+  if(tangentArc && !tangent && turn*sign>0){
+   const previous=moves[moves.length-1];let mid:LatheNosePoint;
+   if(arcCenter && !previousArc){
+    const theta=Math.atan2(center.x-programPoint.x,center.z-programPoint.z)+(side==='left'?-Math.PI/2:Math.PI/2);
+    const delta=Math.atan2(arcCenter.x-programPoint.x,arcCenter.z-programPoint.z),alpha=delta+(line.motion==='G03'?-Math.PI/2:Math.PI/2);
+    let beta=side==='left'?theta-alpha:alpha-theta;
+    if(beta>1.5*Math.PI)beta-=2*Math.PI;else if(beta<-Math.PI/2)beta+=2*Math.PI;
+    const arcRadius=Math.hypot(line.end.x-arcCenter.x,line.end.z-arcCenter.z),inside=(side==='left'&&line.motion==='G03')||(side==='right'&&line.motion==='G02');
+    const compensatedRadius=inside?arcRadius-radius:arcRadius+radius,projection=arcRadius*Math.sin(beta-Math.PI/2)+(inside?radius:-radius),ratio=projection/compensatedRadius;
+    if(!(compensatedRadius>0)||!Number.isFinite(ratio)||Math.abs(ratio)>1)return error('CONCAVE_GOUGING',line.sourceLine);
+    const angle=inside?(line.motion==='G03'?theta+Math.asin(ratio):theta-Math.asin(ratio)):(line.motion==='G03'?theta+Math.PI-Math.asin(ratio):theta+Math.PI+Math.asin(ratio));
+    mid={z:arcCenter.z+compensatedRadius*Math.cos(angle),x:arcCenter.x+compensatedRadius*Math.sin(angle)};
+    const clipped=sub(mid,moves.length===1?previous.start:sub(previous.start,shift)),direction=sub(programPoint,programStart);
+    if(clipped.x*direction.x+clipped.z*direction.z<0)return error('CONCAVE_GOUGING',line.sourceLine);
+   }else if(previousArc && !arcCenter && previous.center){
+    const previousCenter=sub(previous.center,shift),oldRadius=Math.hypot(previous.end.x-previous.center.x,previous.end.z-previous.center.z);
+    const ccw=previous.motion==='G03',inside=(side==='left'&&ccw)||(side==='right'&&!ccw),uncompensatedRadius=inside?oldRadius+radius:oldRadius-radius;
+    const base=Math.atan2(line.end.x-programPoint.x,line.end.z-programPoint.z),theta=base+(ccw?Math.PI/2:-Math.PI/2),phi=Math.atan2(previousCenter.x-programPoint.x,previousCenter.z-programPoint.z);
+    const distance=uncompensatedRadius*Math.cos(theta-phi)+(inside?-radius:radius),ratio=distance/oldRadius;
+    if(!(oldRadius>0)||!Number.isFinite(ratio)||Math.abs(ratio)>1)return error('CONCAVE_GOUGING',line.sourceLine);
+    const angle=theta+Math.PI+(inside?(ccw?-1:1):(ccw?1:-1))*Math.acos(ratio);
+    mid={z:previousCenter.z+oldRadius*Math.cos(angle),x:previousCenter.x+oldRadius*Math.sin(angle)};
+    const angleOf=(point:LatheNosePoint)=>Math.atan2(point.x-previous.center!.x,point.z-previous.center!.z),startAngle=angleOf(previous.start),oldAngle=angleOf(previous.end),newAngle=angleOf(toolPoint(mid));
+    const sweep=(end:number)=>((ccw?end-startAngle:startAngle-end)%(2*Math.PI)+2*Math.PI)%(2*Math.PI);
+    if(sweep(newAngle)>sweep(oldAngle)+.0254)return error('CONCAVE_GOUGING',line.sourceLine);
+   }else return error('UNSUPPORTED_ARC_CORNER',line.sourceLine);
+   if(![mid.x,mid.z].every(Number.isFinite))return error('INVALID_COORDINATE',line.sourceLine);
+   previous.end=toolPoint(mid);center=mid;
+  }else if(!tangentArc && turn!==0 && turn*sign>0){
    const delta=sub(nextStart,center),t=cross(delta,v)/turn,s=cross(delta,u)/turn;
    if(!Number.isFinite(t)||!Number.isFinite(s)||t>0||s<0||-t>al||s>bl)return error('CONCAVE_GOUGING',line.sourceLine);
    const intersection=plus(center,times(u,t)),tip=toolPoint(intersection);
