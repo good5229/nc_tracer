@@ -17,7 +17,8 @@ jobs:
         shell: bash
         run: |
           mkdir -p /tmp/linuxcnc-reference
-          for diameter in 0 0.04 0.0625; do
+          printf "[TRAJ]\nLINEAR_UNITS = mm\n" > /tmp/reference.ini
+          for diameter in 0 1.016 1.5875; do
             cat > /tmp/reference-tool.tbl <<TOOLS
           T1 P1 Z0 D${diameter} Q0
           T2 P2 Z0 D0.5 Q0
@@ -29,7 +30,7 @@ jobs:
               name=$(basename "$file")
               output="/tmp/linuxcnc-reference/${name}-diameter-${diameter}.txt"
               echo "--- $name, T1 D${diameter} ---"
-              if timeout 30s rs274 -g -t /tmp/reference-tool.tbl "$file" > "$output" 2>&1; then
+              if timeout 30s rs274 -i /tmp/reference.ini -g -t /tmp/reference-tool.tbl "$file" > "$output" 2>&1; then
                 echo "interpreter exit: 0"
               else
                 echo "interpreter exit: $?"
