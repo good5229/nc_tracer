@@ -6,7 +6,7 @@ test('built-in LinuxCNC demos use a visibly labelled point-tool reference', asyn
   for (const [name, status, count] of [
     ['useful-subroutines.ngc', 'SUPPORTED', '1 / 58'],
     ['lathe-g76.ngc', 'SUPPORTED', '1 / 235'],
-    ['lathe_g70_71_demo.ngc', 'UNSUPPORTED', '0 / 0'],
+    ['lathe_g70_71_demo.ngc', 'PARTIAL', '1 / 93'],
   ]) {
     await demos.selectOption(name);
     await expect(page.locator('.file-name')).toHaveText(name);
@@ -21,5 +21,5 @@ test('built-in LinuxCNC demos use a visibly labelled point-tool reference', asyn
       await expect(page.locator('.metrics')).toContainText('행 102');
     }
   }
-  await expect(page.getByRole('region', { name: '해석 진단' })).toContainText('행 28');
+  await expect(page.getByRole('region', { name: '해석 진단' })).toContainText('행 30');
 });

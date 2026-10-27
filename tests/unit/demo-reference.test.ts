@@ -12,7 +12,7 @@ it('runs useful-subroutines and G76 with the explicit point-tool reference',()=>
  expect(lathe.segments.at(-1)?.end.z).toBeCloseTo(-15.24);expect(lathe.segments.at(-1)?.end.x).toBeCloseTo(5.08);
  const firstArc=lathe.segments.find(segment=>segment.sourceLine===27)!;
  expect(firstArc.end.z).toBeCloseTo(1.3); // G92 translated back into the fixed reference frame.
- const rough=parseGcode(g70,setup);expect(rough.status).toBe('UNSUPPORTED');expect(rough.segments).toHaveLength(0);expect(rough.warnings.at(-1)?.sourceLine).toBe(28);expect(rough.warnings.at(-1)?.message).toContain('no exact intersection');
+ const rough=parseGcode(g70,setup);expect(rough.status).toBe('PARTIAL');expect(rough.segments.length).toBeGreaterThan(1);expect(rough.warnings.at(-1)?.sourceLine).toBe(30);
 });
 it('keeps coordinates continuous through G92 and G92.1',()=>{
  const result=parseGcode('G21 G90 G0 X0 Y0 Z10\nG92 Z0\nG1 Z5\nG92.1\nG1 Z20\nM2',setup);
@@ -49,4 +49,15 @@ it('does not silently skip a G71 cycle combined with G92',()=>{
   expect(result.status).toBe('INVALID');expect(result.warnings.at(-1)?.code).toBe('INVALID_G92');
   expect(result.segments).toHaveLength(0);
  }
+});
+
+it('matches the original G71.1 roughing moves against LinuxCNC 2.9.4', async()=>{
+ const reference=(await import('../fixtures/linuxcnc-pawn-g71_1-reference.json')).default;
+ const result=parseGcode(g70,setup);
+ const moves=result.segments.filter(s=>s.sourceLine===28);
+ // The fixture starts at the cycle anchor; ignore the initial positioning move.
+ const first=moves.findIndex(s=>s.motion==='G01' && Math.abs(s.start.x!-15)<1e-8 && Math.abs(s.start.z!-3.041)<1e-8);
+ expect(first).toBeGreaterThanOrEqual(0); const generated=moves.slice(first).filter(s=>s.vertices || Math.hypot(s.end.x!-s.start.x!,s.end.z!-s.start.z!)>1e-12);
+ expect(generated).toHaveLength(reference.moves.length);
+ generated.forEach((move,i)=>{const expected=reference.moves[i];expect(move.motion).toBe(expected.motion);expect(Math.abs(move.end.x!-expected.end[0])).toBeLessThan(.00006);expect(Math.abs(move.end.z!-expected.end[1])).toBeLessThan(.00006);});
 });

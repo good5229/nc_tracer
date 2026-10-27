@@ -423,7 +423,12 @@ function parseCore(text: string, options: ParserOptions, originalSource = text):
       const profile=resolveLinuxCncProfile(routine,target);
       if(!profile.ok){warn(sourceLine,finish?'UNSUPPORTED_G70_PROFILE':'UNSUPPORTED_G71_PROFILE',`Profile line ${profile.sourceLine}: ${profile.message}`);Object.assign(state,blockStartState);status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;}
       const common={position:{x:state.position.x!,z:state.position.z!},X:target.x,Z:target.z,profile:profile.profile,units:'mm' as const,D:byLetter.get('D')?.[0],sourceLine,rawCode};
-      const result=finish ? expandLinuxCncG70({...common,E:byLetter.get('E')?.[0],P:byLetter.get('P')?.[0]}) : expandLinuxCncG71({...common,cycle:gWords.includes(71.2)?'G71.2':'G71.1',I:byLetter.get('I')?.[0],R:byLetter.get('R')?.[0]});
+      const roughInput={...common,cycle:gWords.includes(71.2)?'G71.2' as const:'G71.1' as const,I:byLetter.get('I')?.[0],R:byLetter.get('R')?.[0]};
+      let result=finish ? expandLinuxCncG70({...common,E:byLetter.get('E')?.[0],P:byLetter.get('P')?.[0]}) : expandLinuxCncG71(roughInput);
+      if(!finish && roughInput.cycle==='G71.1' && !result.ok && result.error.code==='UNRESOLVED_GEOMETRY') {
+        const gap=result.error.message.match(/no exact intersection \(gap ([0-9.]+) mm\)/);
+        if(gap && Number(gap[1])<=0.00001) result=expandLinuxCncG71({...roughInput,controllerEmulation:true});
+      }
       if(!result.ok){warn(sourceLine,result.error.code,`${finish?'G70':'G71'} 경로를 정확히 확인할 수 없어 이 구간을 그리지 않았습니다. ${result.error.message}`);Object.assign(state,blockStartState);status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;}
       if(latheComp){
         // LinuxCNC temporarily disables compensation at each pass anchor,

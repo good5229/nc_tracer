@@ -35,6 +35,8 @@ export type RoughCycleInput = {
   sourceLine: number;
   sourceBlockId?: string;
   rawCode: string;
+  /** Reproduce LinuxCNC's internal contour handling for comparison. */
+  controllerEmulation?: boolean;
 };
 export type RoughMove = {
   motion: RoughMotion;
@@ -59,6 +61,8 @@ export const G71_MAX_PROFILE_SEGMENTS = 10_000;
 export const G71_MAX_CUT_LEVELS = 2_000;
 export const G71_MAX_MOVES = 100_000;
 const TOL = 1e-6;
+// Upper bound on intermediate generated-contour mismatch, in millimetres.
+const CONTROLLER_JUNCTION_LIMIT_MM = 0.001;
 const ZTOL = 1e-3;
 /** Treat gaps up to one nanometer as floating-point rounding; larger gaps fail closed. */
 export const G71_JUNCTION_ROUNDING_TOLERANCE_MM = 1e-6;
@@ -86,21 +90,22 @@ function pointLineIntersection(a: P, b: P, c: P, d: P): P | null {
   return add(a, mul(ab, cross(sub(c, a), cd) / den));
 }
 
-function intersectionsAtX(s: Seg, x: number): number[] {
+function intersectionsAtX(s: Seg, x: number, controllerEmulation=false): number[] {
   if (s.kind === 'line') {
-    if (Math.min(s.a.x, s.b.x) > x || Math.max(s.a.x, s.b.x) < x) return [];
-    if (s.a.x === s.b.x) return [s.a.z, s.b.z];
+    if (Math.min(s.a.x, s.b.x) > x+(controllerEmulation?TOL:0) || Math.max(s.a.x, s.b.x) < x-(controllerEmulation?TOL:0)) return [];
+    if (controllerEmulation?Math.abs(s.a.x-s.b.x)<TOL:s.a.x===s.b.x) return [s.a.z, s.b.z];
     return [s.a.z + (x - s.a.x) / (s.b.x - s.a.x) * (s.b.z - s.a.z)];
   }
   const r = length(sub(s.a, s.c)), dx = x - s.c.x;
-  if (Math.abs(dx) > r) return [];
-  const dz = Math.sqrt((r - dx) * (r + dx));
+  const discriminant=(r-dx)*(r+dx);
+  if (controllerEmulation?discriminant < -TOL:Math.abs(dx)>r) return [];
+  const dz = Math.sqrt(Math.max(0,discriminant));
   return [s.c.z + dz, s.c.z - dz].filter((z) => {
     const q = { z, x };
     // Allow only floating-point roundoff when deciding whether an exact
     // circle intersection lies on this arc. Geometric tolerances here can
     // admit a nearby point outside the commanded arc and silently reshape it.
-    const eps = 64 * Number.EPSILON * r * r;
+    const eps = controllerEmulation?TOL:64 * Number.EPSILON * r * r;
     return s.ccw ? cross(sub(s.a, s.c), sub(q, s.c)) >= -eps && cross(sub(s.b, s.c), sub(q, s.c)) <= eps
       : cross(sub(s.a, s.c), sub(q, s.c)) <= eps && cross(sub(s.b, s.c), sub(q, s.c)) >= -eps;
   });
@@ -132,7 +137,7 @@ function monotonic(s: Seg): boolean {
   return s.ccw ? entry >= -ZTOL && exit >= -ZTOL && dz <= -ZTOL : entry <= ZTOL && exit <= ZTOL && dz <= -ZTOL;
 }
 
-function trimAdjacent(prev: Seg, next: Seg, machineScale = 1): void {
+function trimAdjacent(prev: Seg, next: Seg, machineScale = 1, controllerEmulation = false): void {
   if (prev.kind === 'line' && next.kind === 'line') {
     const p = pointLineIntersection(prev.a, prev.b, next.a, next.b);
     if (!p) throw new Error('Cannot intersect parallel offset lines.');
@@ -141,6 +146,16 @@ function trimAdjacent(prev: Seg, next: Seg, machineScale = 1): void {
   if (prev.kind === 'arc' && next.kind === 'arc') {
     const ra = length(sub(prev.a, prev.c)), rb = length(sub(next.a, next.c)), dc = sub(next.c, prev.c), d = length(dc);
     if (!(d > TOL)) throw new Error('Coincident offset arcs are unsupported.');
+    if(controllerEmulation){
+      const gap=Math.max(0,d-ra-rb,Math.abs(ra-rb)-d)/machineScale;
+      if(gap>CONTROLLER_JUNCTION_LIMIT_MM)throw new Error(`Offset arc junction gap ${gap} mm exceeds the supported limit.`);
+      // interp_g7x.cc uses the next arc as the reference circle and clamps
+      // only the square-root term. This is the controller's generated path,
+      // not a modification of the NC profile supplied by the user.
+      const cosine=(d*d+rb*rb-ra*ra)/(2*rb*d),sine=Math.sqrt(Math.max(0,1-cosine*cosine)),toward=sub(prev.c,next.c);
+      const p={z:next.c.z+rb*(cosine*toward.z-sine*toward.x)/d,x:next.c.x+rb*(sine*toward.z+cosine*toward.x)/d};
+      if(!finite(p))throw new Error('LinuxCNC arc junction calculation overflowed.');prev.b=p;next.a=p;return;
+    }
     const circlesGap = Math.max(0, d - ra - rb, Math.abs(ra - rb) - d) / machineScale;
     if (circlesGap > G71_JUNCTION_ROUNDING_TOLERANCE_MM) {
       throw new Error(`Offset junction gap ${circlesGap.toFixed(6)} mm exceeds the ${G71_JUNCTION_ROUNDING_TOLERANCE_MM} mm rounding tolerance between profile lines ${prev.meta.sourceLine}/${next.meta.sourceLine}.`);
@@ -156,6 +171,7 @@ function trimAdjacent(prev: Seg, next: Seg, machineScale = 1): void {
   const arc = prev.kind === 'arc' ? prev : next as Arc;
   const line = prev.kind === 'line' ? prev : next as Line;
   const lineIsPrev = prev.kind === 'line';
+  if(controllerEmulation && near(prev.b,next.a))return;
   // Find line-circle intersections and select the one nearest the original junction.
   // LinuxCNC 2.9.4's line/arc intersection uses the arc endpoint radius.
   const d = sub(line.b, line.a), f = sub(line.a, arc.c), aa = dot(d, d), bb = 2 * dot(f, d), cc = dot(f, f) - norm(sub(arc.b, arc.c));
@@ -165,9 +181,9 @@ function trimAdjacent(prev: Seg, next: Seg, machineScale = 1): void {
     const t = -dot(f, d) / aa;
     const lineDistance = length(sub(add(line.a, mul(d, t)), arc.c));
     const gapMm = Math.abs(lineDistance - length(sub(arc.b, arc.c))) / machineScale;
-    throw new Error(`Offset line/arc junction on profile lines ${prev.meta.sourceLine}/${next.meta.sourceLine} has no exact intersection (gap ${gapMm.toFixed(6)} mm); refusing to project to a tangent point.`);
+    if (!controllerEmulation || gapMm > CONTROLLER_JUNCTION_LIMIT_MM) throw new Error(`Offset line/arc junction on profile lines ${prev.meta.sourceLine}/${next.meta.sourceLine} has no exact intersection (gap ${gapMm.toFixed(6)} mm); refusing to project to a tangent point.`);
   }
-  const root = Math.sqrt(disc);
+  const root = Math.sqrt(Math.max(0,disc));
   const candidates = [(-bb + root) / (2 * aa), (-bb - root) / (2 * aa)].map((t) => add(line.a, mul(d, t)));
   // LinuxCNC's arc/line intersection selects the root closest to the arc's
   // start point, independent of whether the arc comes before or after line.
@@ -176,7 +192,7 @@ function trimAdjacent(prev: Seg, next: Seg, machineScale = 1): void {
   if (lineIsPrev) { line.b = p; arc.a = p; } else { arc.b = p; line.a = p; }
 }
 
-function applyCornerFillets(path: Seg[], machineScale: number): Seg[] {
+function applyCornerFillets(path: Seg[], machineScale: number, controllerEmulation = false): Seg[] {
   for (let i = 1; i < path.length - 1; i += 1) {
     const corner = path[i];
     if (!corner.finish) continue;
@@ -188,7 +204,7 @@ function applyCornerFillets(path: Seg[], machineScale: number): Seg[] {
     let amount = d;
     offset(prev, amount); offset(next, amount);
     if (prev.b.z - next.a.z > 1e-2) { amount = -amount; offset(prev, 2 * amount); offset(next, 2 * amount); }
-    trimAdjacent(prev, next, machineScale);
+    trimAdjacent(prev, next, machineScale,controllerEmulation);
     const center = mul(add(prev.b, next.a), 0.5);
     offset(prev, -amount); offset(next, -amount);
     path[i - 1].b = prev.b; path[i + 1].a = next.a;
@@ -199,7 +215,8 @@ function applyCornerFillets(path: Seg[], machineScale: number): Seg[] {
     }
   }
   const tooSmall = path.find((s) => radius(s) < 1e-3 && !(s.finish === 0 && near(s.a, s.b, 0)));
-  if (tooSmall) throw new Error(`Corner finish creates a segment below the 0.001 mm geometry limit at source line ${tooSmall.meta.sourceLine}; refusing to discard it.`);
+  if (tooSmall && !controllerEmulation) throw new Error(`Corner finish creates a segment below the 0.001 mm geometry limit at source line ${tooSmall.meta.sourceLine}; refusing to discard it.`);
+  if(controllerEmulation)return path.filter(s=>radius(s)>=1e-3);
   return path.filter((s) => !(s.finish === 0 && near(s.a, s.b, 0)));
 }
 
@@ -235,7 +252,7 @@ export function expandLinuxCncG71(input: RoughCycleInput): RoughingResult {
   const scale = input.units === 'inch' ? 25.4 : 1;
   const d = input.D ?? 0, step = input.I ?? 1, retract = input.R ?? 0.5;
   if (!Number.isInteger(input.sourceLine) || input.sourceLine < 1 || !input.rawCode.trim() || !finite(input.position)) return fail('INVALID_SOURCE_OR_POSITION', 'Cycle source and current X/Z position must be present and finite.');
-  if (input.cycle === 'G71.2' && (input.profile.length > 100 || input.profile.some(s => s.corner))) return fail('UNSUPPORTED_G71_2', 'G71.2 currently supports profiles of at most 100 segments without A/C corners.');
+  if (input.cycle === 'G71.2' && (input.profile.length > 100 || (!input.controllerEmulation && input.profile.some(s => s.corner)))) return fail('UNSUPPORTED_G71_2', 'G71.2 currently supports profiles of at most 100 segments without A/C corners.');
   if (!input.profile.length || input.profile.length > G71_MAX_PROFILE_SEGMENTS) return fail('PROFILE_LIMIT', `Profile must contain 1 to ${G71_MAX_PROFILE_SEGMENTS} segments.`);
   if (![d, step, retract, input.X ?? input.position.x, input.Z ?? input.position.z].every(Number.isFinite) || d < 0 || step <= 0 || retract < 0) return fail('INVALID_CYCLE_WORDS', 'G71 D and R must be non-negative and I must be positive.');
   if (input.profile.some((s) => !finite(s.end) || !Number.isInteger(s.sourceLine) || s.sourceLine < 1 || !s.rawCode.trim() || (s.corner && (!Number.isFinite(s.corner.amount) || s.corner.amount < 0)))) return fail('INVALID_PROFILE', 'Profile moves, source mappings, and corner dimensions must be valid.');
@@ -257,6 +274,7 @@ export function expandLinuxCncG71(input: RoughCycleInput): RoughingResult {
   let activeMeta: RoughProfileSegment | undefined;
   const emit: Sink = (motion, end, kind, meta = activeMeta, center) => {
     if (moves.length >= G71_MAX_MOVES) throw new Error(`G71 expanded path exceeds ${G71_MAX_MOVES} moves.`);
+    if(center && input.controllerEmulation && Math.abs(end.x-machinePosition.x)/(scale*unitScale)<1e-6 && Math.abs(end.z-machinePosition.z)/(scale*unitScale)<1e-6)return;
     // Preserve every non-zero commanded move, including sub-tolerance cycle
     // positioning changes. A full-circle arc can also have identical ends.
     if (!center && machinePosition.x === end.x && machinePosition.z === end.z) return;
@@ -291,9 +309,9 @@ export function expandLinuxCncG71(input: RoughCycleInput): RoughingResult {
     // reversing or auto-rotating contours is rejected rather than guessed.
     if (path[0].b.z - path.at(-1)!.b.z <= TOL) return fail('UNSUPPORTED_PROFILE_DIRECTION', 'G71 requires the contour to advance monotonically toward decreasing Z.');
     path[0].a = normOrigin;
-    path = applyCornerFillets(path, scale * unit);
+    path = applyCornerFillets(path, scale * unit,input.controllerEmulation);
     if (path.length < 2 || path.some((s) => !monotonic(s))) return fail('NON_MONOTONIC_PROFILE', 'G71 profile is non-monotonic in Z after applying corner finishes.', path.find((s) => !monotonic(s))?.meta.sourceLine ?? input.sourceLine);
-    path = offsetContour(path, dNorm, scale * unit);
+    path = input.controllerEmulation?offsetContourLinuxCnc(path,dNorm,scale*unit):offsetContour(path, dNorm, scale * unit);
     const anchor = path[0];
     // Stock allowance D offsets the contour away from material; G71.1/2 in
     // LinuxCNC then applies any caller-provided profile shifts before roughing.
@@ -310,7 +328,7 @@ export function expandLinuxCncG71(input: RoughCycleInput): RoughingResult {
     emit('G00', anchor.a, 'cycle-position', anchor.meta);
     const location = { ...anchor.a };
     const levels: number[] = [];
-    runPockets(path, cycleNumber, location, delta, escape, emit, levels);
+    runPockets(path, cycleNumber, location, delta, escape, emit, levels,undefined,0,0,input.controllerEmulation);
     if (!moves.length) return fail('EMPTY_ROUGH_PATH', 'G71 generated no preview motions.');
     return { ok: true, moves, finalPosition: { x: machinePosition.x / scale / unitScale, z: machinePosition.z / scale / unitScale }, cutLevels: levels.map((x) => x / unit / scale) };
   } catch (error) {
@@ -354,6 +372,34 @@ export function expandLinuxCncG70(input: Omit<RoughCycleInput, 'cycle' | 'I' | '
     }
     return {ok:true,moves,finalPosition:{x:machinePosition.x/(scale*unit),z:machinePosition.z/(scale*unit)},cutLevels:[]};
   } catch(error){return fail('UNRESOLVED_G70_GEOMETRY',error instanceof Error?error.message:'G70 geometry could not be resolved.');}
+}
+
+/** Mirrors LinuxCNC 2.9.4 g7x::add_distance, including its own small-segment
+ * removal and junction midpoint rules. This only acts on generated contour
+ * geometry; original NC coordinates remain unchanged. */
+function offsetContourLinuxCnc(path:Seg[],distance:number,machineScale:number):Seg[]{
+ const anchor=path.shift();if(!anchor||path.length<2)throw new Error('Contour is too short for LinuxCNC offset.');
+ const first=sub(anchor.b,anchor.a),span=sub(path.at(-1)!.a,anchor.a),signed=cross(first,span)>0?-distance:distance;
+ let current=0,iterations=0;
+ while(current!==signed){
+  if(++iterations>10000||path.length<2)throw new Error('LinuxCNC contour offset exceeded its limit.');
+  let amount=Math.min(Math.abs(signed-current),...path.map(s=>radius(s)/2));if(signed<0)amount=-amount;
+  if(!Number.isFinite(amount)||amount===0||current+amount===current)throw new Error('LinuxCNC contour offset cannot make progress.');
+  for(let i=0;i<path.length;i++){offset(path[i],amount);if(radius(path[i])<1e-3){path.splice(i,1);i--;}}
+  if(path.length<2)throw new Error('LinuxCNC offset removed the contour.');
+  for(let i=0;i<path.length-1;i++)if(path[i].b.z-path[i+1].a.z>1e-2){
+   const prev=structuredClone(path[i]),next=structuredClone(path[i+1]);offset(prev,-amount);offset(next,-amount);
+   path.splice(i+1,0,{kind:'arc',a:path[i].b,b:path[i+1].a,c:mul(add(prev.b,next.a),.5),ccw:signed>0,finish:0,meta:path[i].meta});i++;
+  }
+  for(let i=0;i<path.length-1;i++){
+   if(!monotonic(path[i])){if(i===0)throw new Error('LinuxCNC offset requires an unavailable preceding segment.');const remove=radius(path[i])<radius(path[i-1])?i:i-1;path.splice(remove,1);i=0;if(path.length<2)throw new Error('LinuxCNC offset removed the contour.');}
+   if(radius(path[i])<1e-3){path.splice(i,1);i=0;if(path.length<2)throw new Error('LinuxCNC offset removed the contour.');}
+   trimAdjacent(path[i],path[i+1],machineScale,true);
+  }
+  current+=amount;
+ }
+ for(let i=0;i<path.length-1;i++){const midpoint=mul(add(path[i].b,path[i+1].a),.5);path[i].b=midpoint;path[i+1].a=midpoint;}
+ anchor.b=path[0].a;path.unshift(anchor);return path;
 }
 
 function offsetContour(path: Seg[], distance: number, machineScale: number): Seg[] {
@@ -411,45 +457,45 @@ function offsetContour(path: Seg[], distance: number, machineScale: number): Seg
   return path;
 }
 
-function runPockets(path: Seg[], cycle: number, location: P, delta: number, retract: number, emit: Sink, levels: number[], pocketStarts: P[] = [{ ...location }], startIndex = 0, depth = 0): void {
+function runPockets(path: Seg[], cycle: number, location: P, delta: number, retract: number, emit: Sink, levels: number[], pocketStarts: P[] = [{ ...location }], startIndex = 0, depth = 0,controllerEmulation=false): void {
   if (depth > 100) throw new Error('G71 pocket recursion exceeds the supported limit.');
   const top = pocketStarts.at(-1)!.x;
   let x = top, steps = 0, p = startIndex;
   if (cycle === 2) {
-    for (; p < path.length; p += 1) if (dive(path[p], location, -1e9, emit, p === 0)) break;
+    for (; p < path.length; p += 1) if (dive(path[p], location, -1e9, emit, p === 0,controllerEmulation)) break;
     cycle = 3;
   }
   while (p < path.length) {
     while (x - TOL > location.x) { steps += 1; x = top - steps * delta; if (steps > G71_MAX_CUT_LEVELS) throw new Error(`G71 exceeds ${G71_MAX_CUT_LEVELS} cut levels.`); }
-    if (dive(path[p], location, x, emit, p === 0)) {
+    if (dive(path[p], location, x, emit, p === 0,controllerEmulation)) {
       if (cycle === 1) {
-        for (; p < path.length; p += 1) climbOnly(path[p], location, emit);
+        for (; p < path.length; p += 1) climbOnly(path[p], location, emit,controllerEmulation);
       } else {
-        for (; p < path.length; p += 1) if (climb(path[p], location, emit, cycle === 3)) {
+        for (; p < path.length; p += 1) if (climb(path[p], location, emit, cycle === 3&&!controllerEmulation)) {
           if (cycle === 3) {
             if (location.x > pocketStarts.at(-1)!.x + TOL && pocketStarts.length > 1) pocketStarts.pop();
             if (pocketStarts.length === 1) pocketStarts.push({ ...location });
           }
-          runPockets(path, cycle, location, delta, retract, emit, levels, pocketStarts, p, depth + 1);
+          runPockets(path, cycle, location, delta, retract, emit, levels, pocketStarts, p, depth + 1,controllerEmulation);
           return;
         }
       }
       return;
     }
     if (p === path.length - 1) return;
-    if (Math.abs(location.x - x) > TOL || near(path[p].b, location)) { p += 1; continue; }
+    if (Math.abs(location.x - x) > TOL || (!controllerEmulation&&near(path[p].b, location))) { p += 1; continue; }
     let found = false;
     for (let ip = p; ip < path.length; ip += 1) {
-      const is = intersectionsAtX(path[ip], location.x);
+      const is = intersectionsAtX(path[ip], location.x,controllerEmulation);
       if (!is.length) continue;
       const destination = ip !== p ? is[0] : is[is.length - 1];
       const distance = Math.abs(destination - location.z);
       if (destination - TOL > location.z) continue;
       if (distance < TOL) {
-        if (cycle === 3 && distance > 0) throw new Error('G71.2 cannot discard a nonzero short move.');
+        if (cycle === 3 && !controllerEmulation && distance > 0) throw new Error('G71.2 cannot discard a nonzero short move.');
         if (ip === p) continue;
         if (near(location, path[ip].a)) {
-          if (cycle === 3 && (location.x !== path[ip].a.x || location.z !== path[ip].a.z)) throw new Error('G71.2 cannot merge distinct coordinates.');
+          if (cycle === 3 && !controllerEmulation && (location.x !== path[ip].a.x || location.z !== path[ip].a.z)) throw new Error('G71.2 cannot merge distinct coordinates.');
           p = ip; found = true; break;
         }
         steps += 1; x = top - steps * delta; found = true; break;
@@ -470,12 +516,12 @@ function runPockets(path: Seg[], cycle: number, location: P, delta: number, retr
   }
 }
 
-function dive(s: Seg, location: P, x: number, emit: Sink, fast: boolean): boolean {
+function dive(s: Seg, location: P, x: number, emit: Sink, fast: boolean,controllerEmulation=false): boolean {
   if (s.kind === 'line') {
     if (s.a.x <= s.b.x + TOL) return true;
-    if (x > s.a.x + TOL) return true;
+    if (!controllerEmulation && x > s.a.x + TOL) return true;
     if (x < s.b.x) { emit(fast ? 'G00' : 'G01', s.b, 'rough-cut', s.meta); location.z = s.b.z; location.x = s.b.x; return false; }
-    const is = intersectionsAtX(s, x);
+    const is = intersectionsAtX(s, x,controllerEmulation);
     if (!is.length) throw new Error('G71 cannot intersect the profile at a cut level.');
     const ep = { z: is[0], x };
     emit(fast ? 'G00' : 'G01', ep, 'rough-cut', s.meta); location.z = ep.z; location.x = ep.x; return false;
@@ -483,10 +529,11 @@ function dive(s: Seg, location: P, x: number, emit: Sink, fast: boolean): boolea
   if (near(location, s.b) || location.z - s.b.z <= TOL) { location.z = s.b.z; location.x = s.b.x; return false; }
   const arcRadius = length(sub(s.a, s.c));
   const radialMiss = Math.abs(x - s.c.x) - arcRadius;
-  if (radialMiss > 0 && radialMiss <= TOL) {
+  if (!controllerEmulation && radialMiss > 0 && radialMiss <= TOL) {
     throw new Error(`G71 cut level has no exact arc intersection at source line ${s.meta.sourceLine} (radial gap ${radialMiss.toExponential(3)} normalized units).`);
   }
-  const is = intersectionsAtX(s, x);
+  let is = intersectionsAtX(s, x,controllerEmulation);
+  if(controllerEmulation&&!is.length)is=intersectionsAtX(s,x-TOL,true);
   if (s.ccw) {
     if (location.z - TOL > s.c.z) return true;
     if (!is.length || is.at(-1)! > s.c.z) { emit('G03', s.b, 'rough-cut', s.meta, s.c); Object.assign(location, s.b); }
@@ -518,11 +565,11 @@ function climb(s: Seg, location: P, emit: Sink, strict = false): boolean {
   Object.assign(location, end); return true;
 }
 
-function climbOnly(s: Seg, location: P, emit: Sink): void {
-  const is = intersectionsAtX(s, location.x);
+function climbOnly(s: Seg, location: P, emit: Sink,controllerEmulation=false): void {
+  const is = intersectionsAtX(s, location.x,controllerEmulation);
   if (!is.length) return;
   if (s.kind === 'line') {
-    if (s.b.x + TOL < s.a.x) return;
+    if (controllerEmulation?s.b.x<s.a.x:s.b.x+TOL<s.a.x) return;
     location.z = is[0]; emit('G01', location, 'profile-follow', s.meta); emit('G01', s.b, 'profile-follow', s.meta); Object.assign(location, s.b); return;
   }
   if (!s.ccw) {
