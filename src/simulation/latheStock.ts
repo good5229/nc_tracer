@@ -16,8 +16,8 @@ export type LatheStockResult={ok:true;remaining:Uint8Array;removed:number;angula
 export type LatheInsertModel='round-nose'|'example-insert';
 /** Rectangular cutting blade, tip centered at the programmed X/Z point. */
 export type PartingToolShape={width:number;length:number};
-/** Ideal sharp 60-degree threading insert with its tip at the programmed point. */
-export type ThreadingToolShape={length:number};
+/** Ideal sharp symmetric threading insert with its tip at the programmed point. */
+export type ThreadingToolShape={length:number;includedAngleDegrees?:number};
 type Point={x:number;z:number};
 const finite=(p:MotionSegment['start'])=>typeof p.x==='number'&&Number.isFinite(p.x)&&typeof p.y==='number'&&Number.isFinite(p.y)&&typeof p.z==='number'&&Number.isFinite(p.z);
 function distanceSquared(point:Point,a:Point,b:Point):number{
@@ -62,14 +62,14 @@ export function simulateLatheStock(result:ParseResult,options:ParserOptions,mode
   if(!tool||!Number.isFinite(tool.diameter)||tool.diameter<=0||!Number.isInteger(tool.orientation)||tool.orientation<0||tool.orientation>9||tool.offsetX!==0||tool.offsetZ!==0)return {ok:false,message:'각 이동에 길이 0인 예제 공구표 항목이 필요합니다.',sourceLine:segment.sourceLine};
   const blade=partingTools[String(segment.tool)],threadTool=threadingTools[String(segment.tool)];
   if(blade&&(!Number.isFinite(blade.width)||!Number.isFinite(blade.length)||blade.width<=0||blade.width>10||blade.length<=0||blade.length>20))return {ok:false,message:'절단 공구 폭과 길이를 확인해 주세요.',sourceLine:segment.sourceLine};
-  if(threadTool&&(!Number.isFinite(threadTool.length)||threadTool.length<=0||threadTool.length>20||blade))return {ok:false,message:'나사 공구 길이와 종류를 확인해 주세요.',sourceLine:segment.sourceLine};
+  if(threadTool&&(!Number.isFinite(threadTool.length)||threadTool.length<=0||threadTool.length>20||!Number.isFinite(threadTool.includedAngleDegrees??60)||(threadTool.includedAngleDegrees??60)<10||(threadTool.includedAngleDegrees??60)>160||blade))return {ok:false,message:'나사 공구 길이와 날 각도(10~160도)를 확인해 주세요.',sourceLine:segment.sourceLine};
   if(model==='example-insert'&&!blade&&!threadTool&&tool.orientation!==2)return {ok:false,message:'예제 인서트 단면은 방향 2인 공구에만 적용할 수 있습니다.',sourceLine:segment.sourceLine};
   if(segment.thread){
    if(blade)return {ok:false,message:'절단 공구를 나사 가공에 사용할 수 없습니다.',sourceLine:segment.sourceLine};
    const t=segment.thread;
    if(!t.external || ![t.pitch,t.phaseTurnsStart,t.phaseTurnsEnd].every(Number.isFinite) || t.pitch<step*2 || t.indexOffsetDegrees!==0 || ![1,-1].includes(t.spindleDirection) || segment.start.x!<0 || segment.end.x!<0 || (t.synchronized&&segment.motion!=='G01'))return {ok:false,message:'예제 나사 계산은 외경 나사, 0.4mm 이상 피치와 기준 위상 0인 경우만 지원합니다.',sourceLine:segment.sourceLine};
    work+=nr*nz*angular;if(work>120_000_000)return {ok:false,message:'선반 형상 계산 범위를 초과했습니다.'};
-   const tan30=Math.tan(Math.PI/6),length=threadTool?.length??2,a={x:segment.start.x!,z:segment.start.z!},b={x:segment.end.x!,z:segment.end.z!};
+   const halfAngleTangent=Math.tan((threadTool?.includedAngleDegrees??60)*Math.PI/360),length=threadTool?.length??2,a={x:segment.start.x!,z:segment.start.z!},b={x:segment.end.x!,z:segment.end.z!};
    if(t.synchronized){
     const dz=b.z-a.z,turnSpan=t.phaseTurnsEnd-t.phaseTurnsStart;
     if(!(turnSpan>0)||!Number.isFinite(turnSpan))return {ok:false,message:'동기화된 나사 이동의 회전량을 확인할 수 없습니다.',sourceLine:segment.sourceLine};
@@ -81,7 +81,7 @@ export function simulateLatheStock(result:ParseResult,options:ParserOptions,mode
       const cell=index(r,z,angle);if(!remaining[cell])continue;
       const x=(r+.5)*step,pz=zMin+(z+.5)*step,near=dz===0?kMin:t.phaseTurnsStart+(pz-a.z)/dz*turnSpan-phase;
       const candidates=[kMin,kMax,Math.max(kMin,Math.min(kMax,Math.floor(near))),Math.max(kMin,Math.min(kMax,Math.ceil(near)))];
-      if(candidates.some(k=>{const progress=Math.max(0,Math.min(1,(phase+k-t.phaseTurnsStart)/turnSpan)),toolZ=a.z+dz*progress,toolX=a.x+(b.x-a.x)*progress,depth=x-toolX;return depth>=0&&depth<=length&&Math.abs(pz-toolZ)<=depth*tan30;})){remaining[cell]=0;removed++;}
+      if(candidates.some(k=>{const progress=Math.max(0,Math.min(1,(phase+k-t.phaseTurnsStart)/turnSpan)),toolZ=a.z+dz*progress,toolX=a.x+(b.x-a.x)*progress,depth=x-toolX;return depth>=0&&depth<=length&&Math.abs(pz-toolZ)<=depth*halfAngleTangent;})){remaining[cell]=0;removed++;}
      }
     }
    }else{
@@ -89,7 +89,7 @@ export function simulateLatheStock(result:ParseResult,options:ParserOptions,mode
     // Real spindle rotation during these moves is machine-dependent.
     const fraction=((-t.spindleDirection*t.phaseTurnsStart)%1+1)%1;
     const angle=Math.min(angular-1,Math.floor(fraction*angular));
-    const polygon=sweptPolygon(a,b,[{x:0,z:0},{x:length,z:-length*tan30},{x:length,z:length*tan30}]);
+    const polygon=sweptPolygon(a,b,[{x:0,z:0},{x:length,z:-length*halfAngleTangent},{x:length,z:length*halfAngleTangent}]);
     let otherPhaseContact=false;
     for(let z=0;z<nz;z++)for(let r=0;r<nr;r++){
      if(!insideConvex({x:(r+.5)*step,z:zMin+(z+.5)*step},polygon))continue;
@@ -107,7 +107,7 @@ export function simulateLatheStock(result:ParseResult,options:ParserOptions,mode
   // visited when that section intersects the tool; charging every angle for
   // every empty section cell needlessly rejects fine threaded-stock grids.
   work+=(points.length-1)*nr*nz*(model==='example-insert'||blade||threadTool?8:1);if(work>120_000_000)return {ok:false,message:'선반 형상 계산 범위를 초과했습니다.'};
-  for(let i=1;i<points.length;i++){const polygon=blade?sweptPolygon(points[i-1],points[i],[{x:0,z:-blade.width/2},{x:blade.length,z:-blade.width/2},{x:blade.length,z:blade.width/2},{x:0,z:blade.width/2}]):threadTool?sweptPolygon(points[i-1],points[i],[{x:0,z:0},{x:threadTool.length,z:-threadTool.length*Math.tan(Math.PI/6)},{x:threadTool.length,z:threadTool.length*Math.tan(Math.PI/6)}]):model==='example-insert'?sweptInsert(points[i-1],points[i],radius):[];
+  for(let i=1;i<points.length;i++){const halfAngleTangent=threadTool?Math.tan((threadTool.includedAngleDegrees??60)*Math.PI/360):0;const polygon=blade?sweptPolygon(points[i-1],points[i],[{x:0,z:-blade.width/2},{x:blade.length,z:-blade.width/2},{x:blade.length,z:blade.width/2},{x:0,z:blade.width/2}]):threadTool?sweptPolygon(points[i-1],points[i],[{x:0,z:0},{x:threadTool.length,z:-threadTool.length*halfAngleTangent},{x:threadTool.length,z:threadTool.length*halfAngleTangent}]):model==='example-insert'?sweptInsert(points[i-1],points[i],radius):[];
    for(let z=0;z<nz;z++)for(let r=0;r<nr;r++){
    const x=(r+.5)*step,pointZ=zMin+(z+.5)*step;
    if((!blade&&!threadTool&&Math.min(distanceSquared({x,z:pointZ},points[i-1],points[i]),distanceSquared({x:-x,z:pointZ},points[i-1],points[i]))<=radius*radius) || (polygon.length>0 && (insideConvex({x,z:pointZ},polygon)||insideConvex({x:-x,z:pointZ},polygon)))){

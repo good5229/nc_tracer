@@ -72,7 +72,7 @@ test('shows the original pawn reference until its first example-stock collision'
 test('shows the complete original G76 path with an explicitly different physical tool assumption',async({page})=>{
  await page.goto('/');await page.getByLabel('LinuxCNC 데모').selectOption('lathe-g76.ngc');
  await expect(page.locator('.status')).toHaveText('SUPPORTED');const region=page.getByRole('region',{name:'선반 예제 소재 형상'});
- await expect(region).toContainText('공구표와 물리 공구가 다르므로');await expect(region).toContainText('폭 1mm·길이 2mm');
+ await expect(region).toContainText('공구표와 물리 공구가 다르므로');await expect(region.getByLabel('T4 날 각도 (도)')).toHaveValue('60');await expect(region.getByLabel('T9 날 폭 (mm)')).toHaveValue('1');
  await region.getByRole('button',{name:'점 공구 경로의 가상 형상 계산'}).click();
  await expect(region.getByRole('status')).toContainText('공구표 반경 0 경로의 가상 예상 형상 (안전 미검증)');
  await expect(region).toContainText('격자 기준으로 소재가 2개로 분리');await expect(region).toContainText('어느 쪽이 제품인지는 고정 방식에 따라 결정됩니다');
@@ -81,4 +81,12 @@ test('shows the complete original G76 path with an explicitly different physical
  await region.getByLabel('표시할 소재').selectOption('2');await previous!.waitForElementState('hidden');
  const selected=await canvas.screenshot();expect(selected.equals(both)).toBe(false);
  await region.getByLabel('표시할 소재').selectOption('0');await expect(region.getByLabel('표시할 소재')).toHaveValue('0');
+});
+
+test('recalculates the original thread preview with chosen example tool dimensions',async({page})=>{
+ await page.goto('/');await page.getByLabel('LinuxCNC 데모').selectOption('lathe-g76.ngc');const region=page.getByRole('region',{name:'선반 예제 소재 형상'});
+ const calculate=region.getByRole('button',{name:'점 공구 경로의 가상 형상 계산'});await calculate.click();await expect(region.getByRole('status')).toContainText('제거된 3D 격자');const before=await region.getByRole('status').textContent();
+ await region.getByLabel('T4 날 각도 (도)').fill('55');await region.getByLabel('T9 날 폭 (mm)').fill('1.5');
+ await calculate.click();await expect(region).toContainText('T4 55도 · 길이 2mm, T9 폭 1.5mm');await expect(region.getByRole('status')).not.toHaveText(before!);
+ await region.getByLabel('T4 날 각도 (도)').fill('0');await expect(calculate).toBeDisabled();
 });

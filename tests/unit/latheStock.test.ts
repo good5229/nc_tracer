@@ -179,3 +179,12 @@ it('keeps the original point-reference stock volume stable when the example grid
  }
  expect(Math.abs(volumes[0]-volumes[1])/volumes[1]).toBeLessThan(.05);
 });
+it('uses the supplied threading angle throughout the synchronized cut',()=>{
+ const code='G21 G90 G18 G8\nT1 M6\nG0 X12 Z0\nS500 M3\nG0 X11\nG76 P1.2 Z-5.5 I-1 J.2 K1 R1\nG0 X12\nM2';
+ const setup={...options,initialPosition:{x:12,y:0,z:1}},parsed=parseGcode(code,setup);
+ const narrow=simulateLatheStock(parsed,setup,'round-nose',undefined,false,{}, {'1':{length:2,includedAngleDegrees:55}});
+ const wide=simulateLatheStock(parsed,setup,'round-nose',undefined,false,{}, {'1':{length:2,includedAngleDegrees:60}});
+ if(!narrow.ok)throw new Error(narrow.message);if(!wide.ok)throw new Error(wide.message);
+ expect(wide.removed).toBeGreaterThan(narrow.removed);
+ expect(simulateLatheStock(parsed,setup,'round-nose',undefined,false,{}, {'1':{length:2,includedAngleDegrees:0}})).toMatchObject({ok:false,message:expect.stringContaining('각도')});
+});

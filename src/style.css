@@ -6,3 +6,4 @@
 
 .profile-info{padding:10px 20px 0;color:#a6bcbb;font-size:11px;line-height:1.5}
 .stock-example{margin-top:16px;border:1px solid #293a41;background:#111b21}.stock-body{display:grid;grid-template-columns:1fr 1fr;gap:20px;padding:20px}.stock-body p{line-height:1.7;margin-bottom:14px}.stock-body strong{color:#e2f6ee}.stock-controls{display:flex;flex-wrap:wrap;gap:16px;margin-bottom:16px;font-size:12px}.stock-controls select{background:#17262b;color:#d8f4eb;border:1px solid #405558;padding:7px}.stock-caution{color:#e4c494}.stock-canvas{height:300px;min-width:0}.stock-canvas canvas{display:block}@media(max-width:800px){.stock-body{grid-template-columns:1fr}.stock-canvas{height:260px}}
+.tool-dimensions label{display:flex;flex-direction:column;gap:4px;max-width:145px}.tool-dimensions input{width:100%;background:#17262b;color:#d8f4eb;border:1px solid #405558;padding:7px}
