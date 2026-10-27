@@ -51,3 +51,8 @@ test('renders compensated low-anchor G70 with allowance after a prior move',asyn
  await page.locator('.topbar input[type=file]').setInputFiles({name:'g70-lowallow.ngc',mimeType:'text/plain',buffer:readFileSync('tests/fixtures/g70_comp_lowallow_right_prior.ngc')});
  await expect(page.locator('.status')).toHaveText('SUPPORTED');await expect(page.locator('.counter')).toContainText('/ 12');await expect(page.getByRole('region',{name:'해석 진단'})).toHaveCount(0);
 });
+test('renders a verified full queued arc after two G70 start rapids',async({page})=>{
+ await page.goto('/');await page.getByLabel('컨트롤러 프로파일').selectOption('linuxcnc');await page.getByLabel('선반 예제 공구표 사용').check();
+ await page.locator('.topbar input[type=file]').setInputFiles({name:'g70-low-arc.ngc',mimeType:'text/plain',buffer:readFileSync('tests/fixtures/g70_comp_arc_low_other.ngc')});
+ await expect(page.locator('.status')).toHaveText('SUPPORTED');await expect(page.locator('.counter')).toContainText('/ 17');await expect(page.getByRole('region',{name:'해석 진단'})).toHaveCount(0);
+});

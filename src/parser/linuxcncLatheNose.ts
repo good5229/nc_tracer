@@ -59,7 +59,7 @@ export function linuxCncLatheNoseLines(start:LatheNosePoint,lines:LatheInputMove
   if(line.motion==='G00_BYPASS'){
    if(bypassed){
     const pending=moves.pop();
-    if(!pending||pending.center||queuedArc)return error('UNSUPPORTED_COMP_G70_QUEUE',line.sourceLine);
+    if(!pending||(!queuedArc&&pending.center))return error('UNSUPPORTED_COMP_G70_QUEUE',line.sourceLine);
     moves.push({start:pending.start,end:{...line.end},motion:'G00',sourceLine:line.sourceLine},{...pending,start:{...line.end}});center={...line.end};continue;
    }
    queuedFirst=moves.length===1;const queued=moves.pop();
@@ -67,8 +67,6 @@ export function linuxCncLatheNoseLines(start:LatheNosePoint,lines:LatheInputMove
    if(queued.center||queued.motion==='G02'||queued.motion==='G03'){
     const reposition={start:queued.start,end:{...line.end},motion:'G00' as const,sourceLine:line.sourceLine};
     if(!queued.center)return {ok:false,code:'UNSUPPORTED_COMP_G70_ARC_QUEUE',sourceLine:line.sourceLine,committed:[...moves,reposition]};
-    const originalRadius=Math.hypot(queued.start.x-queued.center.x,queued.start.z-queued.center.z),anchorRadius=Math.hypot(line.end.x-queued.center.x,line.end.z-queued.center.z);
-    if(!(originalRadius>0)||Math.abs(anchorRadius-originalRadius)>1e-9*Math.max(1,originalRadius))return {ok:false,code:'UNSUPPORTED_COMP_G70_ARC_QUEUE',sourceLine:line.sourceLine,committed:[...moves,reposition]};
     queuedArc=queued;
     if(Math.hypot(queued.start.x-line.end.x,queued.start.z-line.end.z)>1e-12){moves.push(reposition,{...queued,start:{...line.end}});}
     else moves.push(queued);
@@ -88,6 +86,8 @@ export function linuxCncLatheNoseLines(start:LatheNosePoint,lines:LatheInputMove
    const pending=moves[moves.length-1],programDirection=sub(programPoint,programStart);
    if(queuedArc){
     const arcQueueError=(code:string):LatheCompLines=>({ok:false,code,sourceLine:line.sourceLine,committed:moves.slice(0,-1)});
+    const originalRadius=Math.hypot(queuedArc.start.x-queuedArc.center!.x,queuedArc.start.z-queuedArc.center!.z),anchorRadius=Math.hypot(pending.start.x-queuedArc.center!.x,pending.start.z-queuedArc.center!.z);
+    if(!(originalRadius>0)||Math.abs(anchorRadius-originalRadius)>1e-9*Math.max(1,originalRadius))return arcQueueError('UNSUPPORTED_COMP_G70_ARC_QUEUE');
     if(!(beta < -0.01 || beta > Math.PI+0.01))return arcQueueError('UNSUPPORTED_COMP_G70_ARC_QUEUE');
     const previousCenter=sub(queuedArc.center!,shift),oldRadius=Math.hypot(queuedArc.end.x-queuedArc.center!.x,queuedArc.end.z-queuedArc.center!.z),ccw=queuedArc.motion==='G03';
     const inside=(side==='left'&&ccw)||(side==='right'&&!ccw),uncompensatedRadius=inside?oldRadius+radius:oldRadius-radius;
