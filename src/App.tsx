@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import Viewer3D from './components/Viewer3D';
 import StockExample from './components/StockExample';
+import NcStock from './components/NcStock';
 import FileComparison from './components/FileComparison';
 import PathStats, { filterPathSegments, PATH_MOTIONS, type PathFilters } from './components/PathStats';
 import type { MotionSegment, ParseResult, ParserOptions } from './parser/gcode';
@@ -15,6 +16,7 @@ const DEMOS = [
  {name:'lathe_g70_71_demo.ngc', label:'선반 G70/G71', text:latheCycles},
  {name:'lathe-g76.ngc', label:'선반 G76 나사', text:latheThread},
 ];
+const STOCK_NC = `(예제 소재용 홈 가공 · mm)\nG21 G90 G17\nG00 X5 Y10 Z9\nG01 Z6 F200\nG01 X25 Y10\nG00 Z12\nM30`;
 const EMPTY_SEGMENTS: MotionSegment[] = [];
 const fmt = (n: number | null | undefined) => n == null ? '—' : Number(n.toFixed(3)).toString();
 export default function App() {
@@ -28,12 +30,12 @@ export default function App() {
  const [usePointSetup,setUsePointSetup] = useState(false);
  const [initial,setInitial] = useState(false); const [origin,setOrigin] = useState({x:'0',y:'0',z:'0'}); const [unit,setUnit] = useState<'unknown'|'mm'|'inch'>('unknown'); const [distance,setDistance] = useState<'unknown'|'absolute'|'incremental'>('unknown'); const [motion,setMotion] = useState<'unknown'|'G00'|'G01'>('unknown'); const [drop,setDrop] = useState(false);
  const codeList = useRef<HTMLDivElement>(null); const generation = useRef(0); const worker = useRef<Worker | null>(null); const input = useRef<HTMLInputElement>(null);
- const run = (text:string,name:string,size?:number,chosenProfile=profile,pointReference=chosenProfile === 'linuxcnc' && usePointSetup) => {
+ const run = (text:string,name:string,size?:number,chosenProfile=profile,pointReference=chosenProfile === 'linuxcnc' && usePointSetup,initialOverride?:{x:number;y:number;z:number}) => {
   const runId=++generation.current; setSourceGeneration(i=>i+1); worker.current?.terminate(); setPlaying(false); setDrawing(false); setCurrent(-1); setSelectedLine(null); setLineInput(''); setFilters({motions:new Set(PATH_MOTIONS),tools:null}); setResult(null); setPositions(null); setError(''); setSearch(''); setPaste(''); setSource(text); setFilename(name); setFileSize(size ?? new Blob([text]).size); setBusy(true);
   const xyz = {x:Number(origin.x),y:Number(origin.y),z:Number(origin.z)};
   if (!pointReference && initial && (Object.values(origin).some(v=>!v.trim()) || Object.values(xyz).some(v=>!Number.isFinite(v)))) {setError('시작 좌표는 유한한 숫자로 입력해 주세요.');setBusy(false);return;}
   const w = new Worker(new URL('./workers/gcode.worker.ts', import.meta.url), {type:'module'}); worker.current=w;
-  const options:ParserOptions = pointReference ? {controllerProfile:'linuxcnc',linuxcncPointToolReference:true,initialPosition:{x:0,y:0,z:0},initialDistanceMode:'absolute'} : {controllerProfile:chosenProfile, ...(initial ? {initialPosition:xyz} : {}), ...(unit !== 'unknown' ? {initialUnit:unit} : {}), ...(distance !== 'unknown' ? {initialDistanceMode:distance} : {}), ...(motion !== 'unknown' ? {initialMotionMode:motion} : {})};
+  const options:ParserOptions = pointReference ? {controllerProfile:'linuxcnc',linuxcncPointToolReference:true,initialPosition:{x:0,y:0,z:0},initialDistanceMode:'absolute'} : {controllerProfile:chosenProfile, ...(initialOverride ? {initialPosition:initialOverride} : initial ? {initialPosition:xyz} : {}), ...(unit !== 'unknown' ? {initialUnit:unit} : {}), ...(distance !== 'unknown' ? {initialDistanceMode:distance} : {}), ...(motion !== 'unknown' ? {initialMotionMode:motion} : {})};
   setAppliedOptions(options);
   w.onmessage=(e:MessageEvent<GcodeWorkerResponse>) => {if(runId!==generation.current)return;setPositions(e.data.positions);setResult(e.data.result); setBusy(false); setCurrent(e.data.result.segments.length ? 0 : -1); setSelectedLine(e.data.result.segments[0]?.sourceLine ?? null); w.terminate(); if(worker.current===w) worker.current=null;};
   w.onerror=()=>{if(runId!==generation.current)return;setError('파일을 해석하지 못했습니다. 내용과 인코딩을 확인해 주세요.');setBusy(false);w.terminate();};
@@ -67,9 +69,10 @@ export default function App() {
     <div className="profile-info">컨트롤러: {appliedOptions.controllerProfile === 'linuxcnc' ? 'LinuxCNC 일부 명령' : '제한된 일반 프로파일'} · {appliedOptions.linuxcncPointToolReference ? '점 공구 참조: G54·공구 길이·반경 0, G90/G8, 고정 공구 교환' : '작업 좌표계 미확정 (G54–G59 미지원)'} · 좌표는 프로그램 지령값</div>
     <div className="metrics"><div><span>현재 위치 / mm</span><strong>X {fmt(active?.end.x)} <em>Y</em> {fmt(active?.end.y)} <em>Z</em> {fmt(active?.end.z)}</strong></div><div><span>선택된 블록 / 시작점 mm</span><strong>{active ? `${active.motion} · 행 ${active.sourceLine}${active.nBlock ? ` · N${active.nBlock}` : ''} / ${fmt(active.start.x)}, ${fmt(active.start.y)}, ${fmt(active.start.z)}` : '—'}</strong></div><div><span>해석 구간 / 경고 · 선택 블록 단위 / 좌표 모드</span><strong>{result?.segments.length ?? 0} <em>/</em> {result?.warnings.length ?? 0} · {active?.unit ?? '?'} / {active?.distanceMode ?? '?'}</strong></div></div>
    </section></div>
+   <NcStock key={`nc-stock-${sourceGeneration}`} source={source} profile={appliedOptions.controllerProfile ?? 'generic'} onExample={()=>{setProfile('generic');run(STOCK_NC,'예제 소재용 NC',undefined,'generic',false,{x:0,y:0,z:12});}}/>
    <StockExample />
    {result && <PathStats segments={segments} filters={filters} onFiltersChange={setFilters}/>}
-   <FileComparison key={sourceGeneration} source={source} result={result} options={appliedOptions} />
+   <FileComparison key={`comparison-${sourceGeneration}`} source={source} result={result} options={appliedOptions} />
    {(error || result?.warnings.length) ? <section className="diagnostics" aria-label="해석 진단"><h2>해석 진단 <span>{result?.warnings.length ?? 0}</span></h2>{error && <p>{error}</p>}{result?.warnings.slice(0,100).map(w=><button key={w.id} onClick={()=>selectLine(w.sourceLine)}><b>행 {w.sourceLine}</b> {w.message}</button>)}</section> : null}
    <footer><span>NC TOOLPATH VIEWER · LOCAL FIRST</span><span>원본과 좌표는 이 탭의 메모리에서 처리됩니다.</span></footer>
   </main>{drop && <div className="drop-overlay">여기에 NC 파일을 놓으세요</div>}</div>;
