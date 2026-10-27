@@ -256,3 +256,13 @@ it('reports swept holder overlap without removing material as if the holder were
  if(!far.ok)throw new Error(far.message);expect(far.holderContacts).toBeUndefined();expect(far.remaining).toEqual(plain.remaining);
  expect(simulateLatheStock(parsed,options,'round-nose',undefined,false,{}, {},undefined,{}, {xMin:2,xMax:1,zMin:0,zMax:3})).toMatchObject({ok:false,message:expect.stringContaining('홀더')});
 });
+it('does not flag a holder following material already cleared by the cutter',()=>{
+ const setup={...options,initialPosition:{x:12,y:0,z:1}};
+ const code='G21 G90 G18 G8\nT1 M6\nG0 X12 Z-3\nG1 X8 F100\nM2';
+ const parsed=parseGcode(code,setup),plain=simulateLatheStock(parsed,setup);
+ const trailing=simulateLatheStock(parsed,setup,'round-nose',undefined,false,{}, {},undefined,{}, {xMin:.5,xMax:1,zMin:-.12,zMax:.12});
+ const leading=simulateLatheStock(parsed,setup,'round-nose',undefined,false,{}, {},undefined,{}, {xMin:-1,xMax:-.5,zMin:-.12,zMax:.12});
+ if(!plain.ok||!trailing.ok||!leading.ok)throw new Error('holder example did not finish');
+ expect(trailing.remaining).toEqual(plain.remaining);expect(trailing.holderContacts).toBeUndefined();
+ expect(leading.holderContacts?.some(c=>c.motion==='G01')).toBe(true);
+});

@@ -149,6 +149,18 @@ export function simulateLatheStock(result:ParseResult,options:ParserOptions,mode
   const radius=tool.diameter/2,shift=blade||threadTool?{x:0,z:0}:latheNoseOriginOffset(tool.orientation,radius),points:Point[]=[];
   if(segment.vertices){for(let i=0;i<segment.vertices.length;i+=3){if(segment.vertices[i+1]!==0)return {ok:false,message:'Y축이 포함된 선반 경로는 지원하지 않습니다.',sourceLine:segment.sourceLine};points.push({x:segment.vertices[i]-shift.x,z:segment.vertices[i+2]-shift.z});}}
   else points.push({x:segment.start.x!-shift.x,z:segment.start.z!-shift.z},{x:segment.end.x!-shift.x,z:segment.end.z!-shift.z});
+  if(holder&&segment.motion!=='G00'){
+   // Apply stock removal between short pieces so a following holder does
+   // not report material that the cutter already removed on the same move.
+   // Each piece remains a conservative pre-cut holder overlap check.
+   const refined:Point[]=[points[0]];
+   for(let i=1;i<points.length;i++){
+    const a=points[i-1],b=points[i],count=Math.max(1,Math.ceil(Math.hypot(b.x-a.x,b.z-a.z)/Math.max(step,.1)));
+    if(refined.length+count>100_000)return {ok:false,message:'홀더 간섭 이동 분할 범위를 초과했습니다.',sourceLine:segment.sourceLine};
+    for(let n=1;n<=count;n++)refined.push(n===count?b:{x:a.x+(b.x-a.x)*n/count,z:a.z+(b.z-a.z)*n/count});
+   }
+   points.length=0;for(const point of refined)points.push(point);
+  }
   for(let i=1;i<points.length;i++){if(!scanHolder(points[i-1],points[i],segment))return {ok:false,message:'홀더 간섭 계산 범위를 초과했습니다.',sourceLine:segment.sourceLine};const polygon=blade?sweptPolygon(points[i-1],points[i],[{x:0,z:-blade.width/2},{x:blade.length,z:-blade.width/2},{x:blade.length,z:blade.width/2},{x:0,z:blade.width/2}]):!threadTool&&model==='example-insert'?sweptInsert(points[i-1],points[i],radius,currentInsert):[];
    let r0=0,r1=nr-1,z0=0,z1=nz-1;
    if(!blade&&!threadTool&&radius>=1e-4){
