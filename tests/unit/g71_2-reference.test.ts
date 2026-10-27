@@ -11,10 +11,10 @@ describe('LinuxCNC G71.2 reference traces',()=>{
   result.segments.forEach((segment,i)=>{const expected=reference[name][i];expect(segment.motion).toBe(expected.motion);expect(segment.end.x).toBeCloseTo(expected.end[0],4);expect(segment.end.z).toBeCloseTo(expected.end[1],4);});
  });
 });
-it('does not emit a partial cycle for unsupported allowance or tiny contour changes',()=>{
+it('does not emit a partial cycle for unsupported corner finish or tiny contour changes',()=>{
  const source=readFileSync(new URL('../fixtures/g71_2_pocket.ngc',import.meta.url),'utf8');
  const settings={controllerProfile:'linuxcnc' as const,linuxcncPointToolReference:true,initialPosition:{x:0,y:0,z:0},initialDistanceMode:'absolute' as const};
- for(const modified of [source.replace('D0 I2','D0.5 I2'),source.replace('X6 Z-4','X4.001 Z-4')]){
+ for(const modified of [source.replace('G1 X4 Z-3','G1 X4 Z-3 A0.2'),source.replace('X6 Z-4','X4.001 Z-4')]){
   const result=parseGcode(modified,settings);expect(result.status).toBe('PARTIAL');expect(result.warnings.at(-1)?.code).toBe('UNSUPPORTED_G71_2');expect(result.segments.every(s=>!s.rawCode.includes('G71.2'))).toBe(true);
  }
 });

@@ -2,7 +2,7 @@
  * Geometry-only G71.1 expansion derived from LinuxCNC 2.9.4 interp_g7x.cc.
  * LinuxCNC is distributed under GPL-2.0; see demo/COPYING and
  * https://github.com/LinuxCNC/linuxcnc/blob/v2.9.4/src/emc/rs274ngc/interp_g7x.cc.
- * G71.2 accepts only a bounded straight-line, zero-allowance subset.
+ * G71.2 supports bounded XZ contours; uncertain geometry fails closed.
  */
 export const LINUXCNC_G71_COMPAT_VERSION = '2.9.4';
 export type RoughPoint = { x: number; z: number };
@@ -43,7 +43,7 @@ export type RoughMove = {
   center?: RoughPoint;
   /** Identifies generated roughing/retract motion while keeping its source contour attribution. */
   kind: 'cycle-position' | 'rough-cut' | 'pocket-retract' | 'profile-follow' | 'pocket-approach';
-  cycle: 'G71.1' | 'G71.2';
+  cycle: 'G70' | 'G71.1' | 'G71.2';
   cycleSourceLine: number;
   cycleSourceBlockId?: string;
   cycleRawCode: string;
@@ -235,7 +235,7 @@ export function expandLinuxCncG71(input: RoughCycleInput): RoughingResult {
   const scale = input.units === 'inch' ? 25.4 : 1;
   const d = input.D ?? 0, step = input.I ?? 1, retract = input.R ?? 0.5;
   if (!Number.isInteger(input.sourceLine) || input.sourceLine < 1 || !input.rawCode.trim() || !finite(input.position)) return fail('INVALID_SOURCE_OR_POSITION', 'Cycle source and current X/Z position must be present and finite.');
-  if (input.cycle === 'G71.2' && (d !== 0 || input.profile.length > 100 || input.profile.some(s => s.motion === 'G02' || s.motion === 'G03' || s.corner))) return fail('UNSUPPORTED_G71_2', 'G71.2 currently supports only straight profiles with D0 and no A/C corners.');
+  if (input.cycle === 'G71.2' && (input.profile.length > 100 || input.profile.some(s => s.corner))) return fail('UNSUPPORTED_G71_2', 'G71.2 currently supports profiles of at most 100 segments without A/C corners.');
   if (!input.profile.length || input.profile.length > G71_MAX_PROFILE_SEGMENTS) return fail('PROFILE_LIMIT', `Profile must contain 1 to ${G71_MAX_PROFILE_SEGMENTS} segments.`);
   if (![d, step, retract, input.X ?? input.position.x, input.Z ?? input.position.z].every(Number.isFinite) || d < 0 || step <= 0 || retract < 0) return fail('INVALID_CYCLE_WORDS', 'G71 D and R must be non-negative and I must be positive.');
   if (input.profile.some((s) => !finite(s.end) || !Number.isInteger(s.sourceLine) || s.sourceLine < 1 || !s.rawCode.trim() || (s.corner && (!Number.isFinite(s.corner.amount) || s.corner.amount < 0)))) return fail('INVALID_PROFILE', 'Profile moves, source mappings, and corner dimensions must be valid.');
@@ -316,6 +316,44 @@ export function expandLinuxCncG71(input: RoughCycleInput): RoughingResult {
   } catch (error) {
     return fail('UNRESOLVED_GEOMETRY', error instanceof Error ? error.message : 'LinuxCNC G71 geometry could not be resolved.');
   }
+}
+
+/** Expand a LinuxCNC G70 profile for a known point tool in G8. Geometry that
+ * cannot be offset without changing the requested coordinates is rejected. */
+export function expandLinuxCncG70(input: Omit<RoughCycleInput, 'cycle' | 'I' | 'R'> & { E?: number; P?: number }): RoughingResult {
+  const fail = (code: string, message: string): RoughingResult => ({ok:false, moves:[], error:{code,message,sourceLine:input.sourceLine}});
+  const scale=input.units==='inch'?25.4:1, d=input.D??0, e=input.E??0, passes=input.P??1;
+  if(!finite(input.position) || !Number.isInteger(input.sourceLine) || input.sourceLine<1 || !input.rawCode.trim() || !Number.isInteger(passes) || passes<1 || passes>100 || !Number.isFinite(d) || !Number.isFinite(e) || d<0 || e<0 || input.profile.length<2 || input.profile.length>100) return fail('INVALID_G70_SETUP','G70 requires finite coordinates, non-negative D/E, 1–100 passes and 2–100 profile segments.');
+  if(input.profile.some(s=>s.corner)) return fail('UNSUPPORTED_G70_PROFILE','G70 A/C corner finishing is not yet verified.');
+  const target={x:input.X??input.position.x,z:input.Z??input.position.z};
+  if(!finite(target) || input.profile.some(s=>!finite(s.end) || (s.corner && (!Number.isFinite(s.corner.amount)||s.corner.amount<0)))) return fail('INVALID_G70_PROFILE','G70 profile has invalid coordinates or corner parameters.');
+  const origin=mul(toP(input.position),scale), start=mul(toP(target),scale), moves:RoughMove[]=[];
+  let machinePosition=origin, unitScale=1;
+  const emit=(motion:RoughMotion,end:P,meta?:RoughProfileSegment,center?:P)=>{
+    if(moves.length>=G71_MAX_MOVES)throw new Error('G70 expanded path exceeds the movement limit.');
+    if(!center && machinePosition.x===end.x && machinePosition.z===end.z)return;
+    const mapped=(v:P):RoughPoint=>({x:v.x/(scale*unitScale),z:v.z/(scale*unitScale)});
+    moves.push({motion,start:mapped(machinePosition),end:mapped(end),...(center?{center:mapped(center)}:{}),kind:motion==='G00'?'cycle-position':'profile-follow',cycle:'G70',cycleSourceLine:input.sourceLine,cycleSourceBlockId:input.sourceBlockId,cycleRawCode:input.rawCode,...(meta?{profileSourceLine:meta.sourceLine,profileSourceBlockId:meta.sourceBlockId,profileRawCode:meta.rawCode}:{})});
+    machinePosition={...end};
+  };
+  try {
+    let path=profilePath({...input,cycle:'G71.1'},start,scale);
+    if(path.length<2 || path[0].b.z-path.at(-1)!.b.z<=TOL)return fail('UNSUPPORTED_G70_PROFILE','G70 currently requires a profile advancing toward decreasing Z.');
+    const extent=Math.max(...path.flatMap(s=>[Math.abs(s.a.z),Math.abs(s.a.x),Math.abs(s.b.z),Math.abs(s.b.x)]));
+    if(!(extent>0)||!Number.isFinite(extent))return fail('INVALID_G70_PROFILE','G70 profile extent is not finite.');
+    const unit=2**(6-(Math.floor(Math.log2(extent))+1));unitScale=unit;machinePosition=mul(origin,unit);
+    path=path.map(s=>{const clone=structuredClone(s);clone.a=mul(clone.a,unit);clone.b=mul(clone.b,unit);clone.finish*=unit;if(clone.kind==='arc')clone.c=mul(clone.c,unit);return clone;});
+    const anchor=mul(start,unit);path[0].a=anchor;path=applyCornerFillets(path,scale*unit);
+    if(path.length<2 || path.some(s=>!monotonic(s)))return fail('UNSUPPORTED_G70_PROFILE','G70 contour is non-monotonic in Z.');
+    for(let pass=passes;pass>0;pass--){
+      const distance=((pass-1)*(d-e)/passes+e)*scale*unit;
+      if(!Number.isFinite(distance))throw new Error('G70 allowance is not finite.');
+      const offset=offsetContour(structuredClone(path),distance,scale*unit);
+      emit('G00',anchor,offset[0].meta);emit('G00',offset[0].b,offset[0].meta);
+      for(const s of offset.slice(1))emit(s.kind==='line'?'G01':s.ccw?'G03':'G02',s.b,s.meta,s.kind==='arc'?s.c:undefined);
+    }
+    return {ok:true,moves,finalPosition:{x:machinePosition.x/(scale*unit),z:machinePosition.z/(scale*unit)},cutLevels:[]};
+  } catch(error){return fail('UNRESOLVED_G70_GEOMETRY',error instanceof Error?error.message:'G70 geometry could not be resolved.');}
 }
 
 function offsetContour(path: Seg[], distance: number, machineScale: number): Seg[] {

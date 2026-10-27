@@ -1,6 +1,6 @@
 import { expandLinuxCncMacros, findLinuxCncSubroutine } from './linuxcncMacro';
 import { expandLinuxCncG76 } from './linuxcncThread';
-import { expandLinuxCncG71 } from './linuxcncRoughing';
+import { expandLinuxCncG70, expandLinuxCncG71 } from './linuxcncRoughing';
 import { resolveLinuxCncProfile } from './linuxcncProfile';
 
 export type ValidationStatus = 'SUPPORTED' | 'PARTIAL' | 'UNSUPPORTED' | 'INVALID';
@@ -341,59 +341,37 @@ function parseCore(text: string, options: ParserOptions, originalSource = text):
       continue;
     }
 
-    if (finish) {
-      const q=byLetter.get('Q')?.[0], d=byLetter.get('D')?.[0] ?? 0, e=byLetter.get('E')?.[0] ?? 0, passes=byLetter.get('P')?.[0] ?? 1;
-      const invalid=state.plane!=='XZ' || state.unit!=='mm' || state.distanceMode!=='absolute' || !latheRadiusMode || !renderablePosition(state.position) || cutterCompActive || mWords.length>0 || gWords.length!==1 || ['I','J','K','R'].some(letter=>byLetter.has(letter)) || q===undefined || !Number.isInteger(q) || q<1 || d!==0 || e!==0 || passes!==1 || byLetter.has('Y') || ['Q','X','Z','D','E','P'].some(letter=>(byLetter.get(letter)?.length ?? 0)>1);
-      if(invalid){warn(sourceLine,'UNSUPPORTED_G70','G70 requires G8/G18/G21/G90 point-tool reference, one pass, D0/E0, and no cutter compensation');Object.assign(state,blockStartState);status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;}
-      const routine=findLinuxCncSubroutine(originalSource,q!);
-      if(!routine){warn(sourceLine,'UNKNOWN_G70_PROFILE',`Subroutine O${q} is not defined`);Object.assign(state,blockStartState);status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;}
-      const target={x:byLetter.get('X')?.[0] ?? state.position.x!,z:byLetter.get('Z')?.[0] ?? state.position.z!};
-      const resolved=resolveLinuxCncProfile(routine,target);
-      if(!resolved.ok || resolved.profile.length<2 || resolved.profile.length>100 || resolved.profile[0].motion!=='G00' || resolved.profile.some((p,i)=>p.corner || (i>0 && p.motion!=='G01')) || resolved.profile.some((p,i)=>i>0 && p.end.z>resolved.profile[i-1].end.z)) {
-        warn(sourceLine,'UNSUPPORTED_G70_PROFILE','G70 supports a numeric straight-line contour with one initial rapid and decreasing Z only');Object.assign(state,blockStartState);status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;
-      }
-      const points=[{...target,motion:'G00' as const},...resolved.profile.map((p,i)=>({...p.end,motion:i===0?'G00' as const:'G01' as const}))];
-      const prepared:MotionSegment[]=[];let pos={...state.position};
-      for(const [index,point] of points.entries()){
-        const end={...pos,x:point.x,z:point.z}, startReference=toReference(pos),endReference=toReference(end);
-        if(!renderablePosition(endReference)){warn(sourceLine,'FLOAT32_PRECISION_LOSS','G70 coordinates exceed display precision');status='INVALID';stopped=true;break;}
-        if(pos.x!==end.x || pos.z!==end.z)prepared.push({id:`line-${sourceLine}-segment-${index}`,sourceLine,rawCode,motion:point.motion,start:startReference,end:endReference,unit:state.unit,distanceMode:state.distanceMode,plane:state.plane,status:'SUPPORTED',warningIds:[],...(state.feed!==null?{feed:state.feed}:{}),...(state.tool!==null?{tool:state.tool}:{})});
-        pos=end;
-      }
-      if(stopped){Object.assign(state,blockStartState);break;}
-      segments.push(...prepared);state.position=pos;state.motionMode=null;continue;
-    }
-
-    if (rough) {
-      const words=['Q','X','Z','D','I','R'];
+    if (finish || rough) {
+      const words=finish ? ['Q','X','Z','D','E','P'] : ['Q','X','Z','D','I','R'];
       const q=byLetter.get('Q')?.[0];
-      if (state.plane !== 'XZ' || state.unit !== 'mm' || state.distanceMode !== 'absolute' || !latheRadiusMode || !renderablePosition(state.position) || mWords.length || q === undefined || !Number.isInteger(q) || q < 1 || words.some(letter=>(byLetter.get(letter)?.length ?? 0)>1) || byLetter.has('Y')) {
-        warn(sourceLine,'INVALID_G71_SETUP','G71 requires the point-tool reference, G8/G18/G21/G90, a known position and a numbered Q profile');Object.assign(state,blockStartState);status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;
+      if (state.plane !== 'XZ' || state.unit !== 'mm' || state.distanceMode !== 'absolute' || !latheRadiusMode || !renderablePosition(state.position) || mWords.length || (finish && gWords.length!==1) || q === undefined || !Number.isInteger(q) || q < 1 || words.some(letter=>(byLetter.get(letter)?.length ?? 0)>1) || byLetter.has('Y') || (finish && ['I','J','K','R'].some(letter=>byLetter.has(letter)))) {
+        warn(sourceLine,finish?'INVALID_G70_SETUP':'INVALID_G71_SETUP','G70/G71 requires the point-tool reference, G8/G18/G21/G90, a known position and a numbered Q profile');Object.assign(state,blockStartState);status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;
       }
       const routine=findLinuxCncSubroutine(originalSource,q);
-      if(!routine){warn(sourceLine,'UNKNOWN_G71_PROFILE',`Subroutine O${q} is not defined`);Object.assign(state,blockStartState);status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;}
+      if(!routine){warn(sourceLine,finish?'UNKNOWN_G70_PROFILE':'UNKNOWN_G71_PROFILE',`Subroutine O${q} is not defined`);Object.assign(state,blockStartState);status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;}
       const target={x:byLetter.get('X')?.[0] ?? state.position.x!,z:byLetter.get('Z')?.[0] ?? state.position.z!};
       const profile=resolveLinuxCncProfile(routine,target);
-      if(!profile.ok){warn(sourceLine,'UNSUPPORTED_G71_PROFILE',`Profile line ${profile.sourceLine}: ${profile.message}`);Object.assign(state,blockStartState);status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;}
-      const result=expandLinuxCncG71({cycle:gWords.includes(71.2)?'G71.2':'G71.1',position:{x:state.position.x!,z:state.position.z!},X:target.x,Z:target.z,profile:profile.profile,units:'mm',D:byLetter.get('D')?.[0],I:byLetter.get('I')?.[0],R:byLetter.get('R')?.[0],sourceLine,rawCode});
-      if(!result.ok){warn(sourceLine,result.error.code,`G71 경로를 정확히 확인할 수 없어 이 구간을 그리지 않았습니다. ${result.error.message}`);Object.assign(state,blockStartState);status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;}
+      if(!profile.ok){warn(sourceLine,finish?'UNSUPPORTED_G70_PROFILE':'UNSUPPORTED_G71_PROFILE',`Profile line ${profile.sourceLine}: ${profile.message}`);Object.assign(state,blockStartState);status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;}
+      const common={position:{x:state.position.x!,z:state.position.z!},X:target.x,Z:target.z,profile:profile.profile,units:'mm' as const,D:byLetter.get('D')?.[0],sourceLine,rawCode};
+      const result=finish ? expandLinuxCncG70({...common,E:byLetter.get('E')?.[0],P:byLetter.get('P')?.[0]}) : expandLinuxCncG71({...common,cycle:gWords.includes(71.2)?'G71.2':'G71.1',I:byLetter.get('I')?.[0],R:byLetter.get('R')?.[0]});
+      if(!result.ok){warn(sourceLine,result.error.code,`${finish?'G70':'G71'} 경로를 정확히 확인할 수 없어 이 구간을 그리지 않았습니다. ${result.error.message}`);Object.assign(state,blockStartState);status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;}
       const prepared:MotionSegment[]=[];let addedVertices=0;
       for(const [index,move] of result.moves.entries()){
         const start=toReference({x:move.start.x,y:state.position.y,z:move.start.z}),end=toReference({x:move.end.x,y:state.position.y,z:move.end.z});
-        if(!renderablePosition(start)||!renderablePosition(end)){warn(sourceLine,'FLOAT32_PRECISION_LOSS','G71 coordinates exceed display precision');status='INVALID';stopped=true;break;}
+        if(!renderablePosition(start)||!renderablePosition(end)){warn(sourceLine,'FLOAT32_PRECISION_LOSS','G70/G71 coordinates exceed display precision');status='INVALID';stopped=true;break;}
         if(!move.center && move.end.x===move.start.x && move.end.z===move.start.z)continue;
         let vertices:Float64Array | undefined;
         if(move.center){
           const su=move.start.z-move.center.z,sv=move.start.x-move.center.x,eu=move.end.z-move.center.z,ev=move.end.x-move.center.x;
           const radius=Math.hypot(su,sv),endRadius=Math.hypot(eu,ev);
-          if(!(radius>0)||Math.abs(radius-endRadius)>.001){warn(sourceLine,'INVALID_G71_ARC','G71 generated an inconsistent arc');status='INVALID';stopped=true;break;}
+          if(!(radius>0)||Math.abs(radius-endRadius)>.001){warn(sourceLine,finish?'INVALID_G70_ARC':'INVALID_G71_ARC','G70/G71 generated an inconsistent arc');status='INVALID';stopped=true;break;}
           const a0=Math.atan2(sv,su),a1=Math.atan2(ev,eu),sweep=move.motion==='G02'?-normalizeAngle(a0-a1):normalizeAngle(a1-a0);
-          if(Math.abs(sweep)<1e-12){warn(sourceLine,'INVALID_G71_ARC','G71 produced an ambiguous zero-sweep arc');status='INVALID';stopped=true;break;}
+          if(Math.abs(sweep)<1e-12){warn(sourceLine,finish?'INVALID_G70_ARC':'INVALID_G71_ARC','G70/G71 produced an ambiguous zero-sweep arc');status='INVALID';stopped=true;break;}
           const sagittaRatio=Math.min(1,ARC_MAX_SAGITTA_MM/radius),step=Math.min(Math.PI/36,2*Math.asin(Math.sqrt(sagittaRatio*(2-sagittaRatio))/2));
           const count=Math.max(1,Math.ceil(Math.abs(sweep)/step));addedVertices+=count+1;
-          if(count>ARC_MAX_SEGMENTS || totalArcVertices+addedVertices>ARC_MAX_TOTAL_VERTICES){warn(sourceLine,'ARC_VERTEX_BUDGET','G71 arc tessellation exceeds the vertex budget');status='INVALID';stopped=true;break;}
+          if(count>ARC_MAX_SEGMENTS || totalArcVertices+addedVertices>ARC_MAX_TOTAL_VERTICES){warn(sourceLine,'ARC_VERTEX_BUDGET','G70/G71 arc tessellation exceeds the vertex budget');status='INVALID';stopped=true;break;}
           vertices=new Float64Array((count+1)*3);
-          for(let i=0;i<=count;i++){const angle=a0+sweep*i/count;const point=toReference({x:i===count?move.end.x:move.center.x+radius*Math.sin(angle),y:state.position.y,z:i===count?move.end.z:move.center.z+radius*Math.cos(angle)});if(!renderablePosition(point)){warn(sourceLine,'FLOAT32_PRECISION_LOSS','G71 arc exceeds display precision');status='INVALID';stopped=true;break;}vertices.set([point.x!,point.y!,point.z!],i*3);}
+          for(let i=0;i<=count;i++){const angle=a0+sweep*i/count;const point=toReference({x:i===count?move.end.x:move.center.x+radius*Math.sin(angle),y:state.position.y,z:i===count?move.end.z:move.center.z+radius*Math.cos(angle)});if(!renderablePosition(point)){warn(sourceLine,'FLOAT32_PRECISION_LOSS','G70/G71 arc exceeds display precision');status='INVALID';stopped=true;break;}vertices.set([point.x!,point.y!,point.z!],i*3);}
           if(stopped)break;
         }
         prepared.push({id:`line-${sourceLine}-segment-${index}`,sourceLine,rawCode,motion:move.motion,start,end,...(vertices?{vertices}:{}),unit:state.unit,distanceMode:state.distanceMode,plane:state.plane,status:'SUPPORTED',warningIds:[],...(state.feed!==null?{feed:state.feed}:{}),...(state.tool!==null?{tool:state.tool}:{})});

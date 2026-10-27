@@ -37,8 +37,8 @@ describe('expandLinuxCncG71', () => {
     expect(result.moves.some((move) => move.profileSourceLine === 11 && move.profileRawCode?.includes('G3'))).toBe(true);
   });
 
-  it('fails closed for G71.2 with unverified allowance', () => {
-    const result = expandLinuxCncG71({ ...base, cycle: 'G71.2', D: 0.1 });
+  it('fails closed for G71.2 with unverified corner finish', () => {
+    const result = expandLinuxCncG71({ ...base, cycle: 'G71.2', profile: base.profile.map((s,i)=>i===1?{...s,corner:{kind:'fillet' as const,amount:0.2}}:s) });
     expect(result).toMatchObject({ ok: false, moves: [], error: { code: 'UNSUPPORTED_G71_2' } });
   });
 
