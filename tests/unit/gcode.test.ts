@@ -31,6 +31,37 @@ describe('parseGcode', () => {
     expect(result.segments[0].end.x).toBe(25.4);
   });
 
+  it('converts modal feed to millimeters per minute and preserves S/T metadata', () => {
+    const result = parseGcode('%\nG20 G90 G00 X0 Y0 Z0 F2 S1200 T3\nG01 X1', { initialPosition: origin });
+    expect(result.status).toBe('SUPPORTED');
+    expect(result.finalState).toMatchObject({ feed: 50.8, spindle: 1200, tool: 3 });
+    expect(result.segments[0]).toMatchObject({ feed: 50.8, spindle: 1200, tool: 3, end: { x: 25.4, y: 0, z: 0 } });
+  });
+
+  it('rejects coordinate and feed overflow before producing a non-finite result', () => {
+    const largeFinite = `9${'0'.repeat(306)}`;
+    for (const input of [`G20 G90 G01 X${largeFinite}`, `G20 G90 G01 F${largeFinite} X1`]) {
+      const result = parseGcode(input, { initialPosition: origin });
+      expect(result.status).toBe('INVALID');
+      expect(result.segments).toHaveLength(0);
+      expect(result.finalState.position).toEqual({ x: null, y: null, z: null });
+      expect(result.finalState).toMatchObject({ unit: null, distanceMode: null, motionMode: null, feed: null });
+      expect(result.warnings[0].code).toBe('CALCULATION_OVERFLOW');
+    }
+  });
+
+  it('rejects initial or computed positions that Three.js Float32 buffers cannot represent', () => {
+    const invalidInitial = parseGcode('', { initialPosition: { x: 3.5e38, y: 0, z: 0 } });
+    expect(invalidInitial.status).toBe('INVALID');
+    expect(invalidInitial.finalState.position).toEqual({ x: null, y: null, z: null });
+
+    const float32Overflow = `35${'0'.repeat(37)}`;
+    const overflow = parseGcode(`G21 G90 G01 X${float32Overflow}`, { initialPosition: origin });
+    expect(overflow.status).toBe('INVALID');
+    expect(overflow.segments).toHaveLength(0);
+    expect(overflow.warnings[0].code).toBe('CALCULATION_OVERFLOW');
+  });
+
   it('does not draw a line from an unknown start, then recovers after an absolute full position', () => {
     const result = parseGcode('G21 G90 G01 X5\nX10 Y20 Z30\nX11', { initialPosition: { x: null, y: null, z: null } });
     expect(result.segments).toHaveLength(1);

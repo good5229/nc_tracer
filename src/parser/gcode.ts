@@ -7,6 +7,9 @@ export type ModalState = {
   motionMode: Motion | null;
   plane: 'XY' | 'XZ' | 'YZ' | null;
   position: Vector3;
+  feed: number | null;
+  spindle: number | null;
+  tool: number | null;
 };
 export type ParseWarning = { id: string; sourceLine: number; code: string; message: string };
 export type MotionSegment = {
@@ -20,6 +23,8 @@ export type MotionSegment = {
   status: ValidationStatus;
   warningIds: string[];
   feed?: number;
+  spindle?: number;
+  tool?: number;
 };
 export type ParseResult = {
   status: ValidationStatus;
@@ -36,6 +41,7 @@ export type ParserOptions = {
 
 const unknownPosition = (): Vector3 => ({ x: null, y: null, z: null });
 const finitePosition = (p: Vector3) => [p.x, p.y, p.z].every((v) => v !== null && Number.isFinite(v));
+const renderablePosition = (p: Vector3) => finitePosition(p) && [p.x, p.y, p.z].every((v) => Number.isFinite(Math.fround(v!)));
 
 function stripComments(line: string): string {
   let out = '';
@@ -82,6 +88,9 @@ export function parseGcode(text: string, options: ParserOptions = {}): ParseResu
     motionMode: options.initialMotionMode ?? null,
     plane: null,
     position: options.initialPosition ? { ...options.initialPosition } : unknownPosition(),
+    feed: null,
+    spindle: null,
+    tool: null,
   };
   let status: ValidationStatus = 'SUPPORTED';
   let stopped = false;
@@ -91,14 +100,16 @@ export function parseGcode(text: string, options: ParserOptions = {}): ParseResu
     return id;
   };
   const lines = text.replace(/^\uFEFF/, '').split(/\r?\n/);
-  if (Object.values(state.position).some((value) => value !== null && !Number.isFinite(value))) {
-    warn(1, 'INVALID_INITIAL_POSITION', 'Initial coordinates must be finite numbers or null');
+  if (Object.values(state.position).some((value) => value !== null && (typeof value !== 'number' || !Number.isFinite(value) || !Number.isFinite(Math.fround(value))))) {
+    warn(1, 'INVALID_INITIAL_POSITION', 'Initial coordinates must be finite Float32-representable numbers or null');
+    state.position = unknownPosition();
     return { status: 'INVALID', segments, warnings, finalState: state };
   }
 
   for (let index = 0; index < lines.length && !stopped; index += 1) {
     const sourceLine = index + 1;
     const rawCode = lines[index];
+    if (rawCode.trim() === '%') continue;
     let tokens: ReturnType<typeof tokenize>;
     try {
       tokens = tokenize(stripComments(rawCode));
@@ -139,6 +150,7 @@ export function parseGcode(text: string, options: ParserOptions = {}): ParseResu
       warn(sourceLine, 'CONFLICTING_MODAL', 'Conflicting modal groups in one block'); status = 'INVALID'; stopped = true; break;
     }
 
+    const blockStartState: ModalState = { ...state, position: { ...state.position } };
     // Modal words are applied before coordinates in their own block.
     if (gWords.includes(20)) state.unit = 'inch';
     if (gWords.includes(21)) state.unit = 'mm';
@@ -149,6 +161,24 @@ export function parseGcode(text: string, options: ParserOptions = {}): ParseResu
     if (gWords.includes(17)) state.plane = 'XY';
     if (gWords.includes(18)) state.plane = 'XZ';
     if (gWords.includes(19)) state.plane = 'YZ';
+
+    const scale = state.unit === 'inch' ? 25.4 : 1;
+    if (byLetter.has('F')) {
+      if (state.unit === null) {
+        state.feed = null;
+        warn(sourceLine, 'UNKNOWN_FEED_UNIT', 'Feed is not retained because its unit is unknown');
+        status = 'PARTIAL';
+      } else {
+        const feed = byLetter.get('F')![0] * scale;
+        if (!Number.isFinite(feed)) {
+          warn(sourceLine, 'CALCULATION_OVERFLOW', 'Feed conversion overflowed');
+          Object.assign(state, blockStartState); status = 'INVALID'; stopped = true; break;
+        }
+        state.feed = feed;
+      }
+    }
+    if (byLetter.has('S')) state.spindle = byLetter.get('S')![0];
+    if (byLetter.has('T')) state.tool = byLetter.get('T')![0];
 
     const axes = ['X', 'Y', 'Z'] as const;
     const hasAxis = axes.some((axis) => byLetter.has(axis));
@@ -169,19 +199,26 @@ export function parseGcode(text: string, options: ParserOptions = {}): ParseResu
       }
       const start = { ...state.position };
       const end = { ...state.position };
-      const scale = state.unit === 'inch' ? 25.4 : 1;
+      let overflow = false;
       for (const axis of axes) {
         const raw = byLetter.get(axis)?.[0];
         if (raw === undefined) continue;
         const value = raw * scale;
-        end[axis.toLowerCase() as 'x' | 'y' | 'z'] = state.distanceMode === 'absolute'
+        const coordinate = state.distanceMode === 'absolute'
           ? value
           : (start[axis.toLowerCase() as 'x' | 'y' | 'z'] === null ? null : start[axis.toLowerCase() as 'x' | 'y' | 'z']! + value);
+        if (coordinate !== null && (!Number.isFinite(coordinate) || !Number.isFinite(Math.fround(coordinate)))) overflow = true;
+        end[axis.toLowerCase() as 'x' | 'y' | 'z'] = coordinate;
+      }
+      if (overflow) {
+        warn(sourceLine, 'CALCULATION_OVERFLOW', 'Coordinate conversion or accumulation overflowed the supported Float32 range');
+        Object.assign(state, blockStartState);
+        status = 'INVALID'; stopped = true; break;
       }
       state.position = end;
-      if (finitePosition(start) && finitePosition(end)) {
+      if (renderablePosition(start) && renderablePosition(end)) {
         if (start.x !== end.x || start.y !== end.y || start.z !== end.z) {
-          segments.push({ id: `line-${sourceLine}-segment-0`, sourceLine, ...(byLetter.has('N') ? { nBlock: String(byLetter.get('N')![0]) } : {}), rawCode, motion: state.motionMode, start, end, status: 'SUPPORTED', warningIds: [], ...(byLetter.has('F') ? { feed: byLetter.get('F')![0] } : {}) });
+          segments.push({ id: `line-${sourceLine}-segment-0`, sourceLine, ...(byLetter.has('N') ? { nBlock: String(byLetter.get('N')![0]) } : {}), rawCode, motion: state.motionMode, start, end, status: 'SUPPORTED', warningIds: [], ...(state.feed !== null ? { feed: state.feed } : {}), ...(state.spindle !== null ? { spindle: state.spindle } : {}), ...(state.tool !== null ? { tool: state.tool } : {}) });
         }
       } else {
         warn(sourceLine, 'POSITION_UNKNOWN', 'Position is not fully known; no line segment was emitted');

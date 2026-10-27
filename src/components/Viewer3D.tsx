@@ -249,6 +249,15 @@ export default function Viewer3D({
     engine.camera.lookAt(target); engine.camera.updateProjectionMatrix(); engine.controls.update();
   };
 
+  const fitOrigin = () => {
+    const engine = engineRef.current;
+    if (!engine) return;
+    const offset = engine.camera.position.clone().sub(engine.controls.target);
+    engine.controls.target.set(0, 0, 0);
+    engine.camera.position.copy(offset);
+    engine.camera.lookAt(engine.controls.target); engine.controls.update();
+  };
+
   const fitAll = () => {
     const engine = engineRef.current;
     if (!engine) return;
@@ -275,6 +284,7 @@ export default function Viewer3D({
     <div className={className} style={{ display: 'flex', flexDirection: 'column', minWidth: 0, minHeight: 240, background: '#111827', color: '#e5e7eb', ...style }}>
       <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, padding: '8px 10px', font: '13px system-ui, sans-serif' }}>
         <button type="button" onClick={fitAll} style={buttonStyle}>전체 맞춤</button>
+        <button type="button" onClick={fitOrigin} style={buttonStyle}>원점 맞춤</button>
         {(['XY', 'XZ', 'YZ'] as ViewerPlane[]).map((v) => <button key={v} type="button" aria-pressed={plane === v} onClick={() => setView(v)} style={{ ...buttonStyle, background: plane === v ? '#334155' : '#1f2937' }}>{v}</button>)}
         <label style={toggleStyle}><input type="checkbox" checked={showRapid} onChange={(e) => setShowRapid(e.target.checked)} /> G00 급속</label>
         <label style={toggleStyle}><input type="checkbox" checked={showLinear} onChange={(e) => setShowLinear(e.target.checked)} /> G01 절삭</label>

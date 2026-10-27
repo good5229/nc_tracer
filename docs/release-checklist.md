@@ -37,3 +37,10 @@ commit/build hash:
 실패/SKIP·남은 조치:
 
 Astra 판정(APPROVED/REWORK/BLOCKED):
+
+## 2026-10-27 진행 기록
+
+- `cf1597d`: GitHub Actions의 npm ci, 타입 검사, 린트, 단위 테스트, 빌드, Chromium smoke 및 Pages 배포 성공. 실제 공개 URL에서 합성 예제 5행 선택 시 X40 Y0 Z0 및 새로고침 확인. 최초 배포이며 최종 변경 반영 여부는 Actions에서 확인한다.
+- 로컬 macOS Chromium headless 합성 입력 1k/10k/100k: 파일 입력부터 해석 상태 표시까지 약 537/507/1655 ms. 메모리 또는 장시간 상호작용 측정은 아니다.
+- Astra 구현 검토에서 수치 범위, 긴 코드 목록, 생산 빌드 테스트 관련 재작업 요청. 후속 수정과 재검증을 별도로 확인해야 한다.
+- Edge, 실제 사용자 NC, 접근성 전체 및 저장소 관찰, 대용량 메모리 측정은 미수행. 원호 및 고급 기능은 미지원.

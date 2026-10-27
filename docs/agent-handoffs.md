@@ -1,6 +1,6 @@
 # 역할·인계와 승인 기록
 
-Astra/Luna는 역할명이다. 존재하지 않는 모델 호출을 주장하지 않는다. 현재 Astra 작업은 실제 협업 서브에이전트 `/root/astra`에서 수행했다. 모델 라우팅 정보는 상위 실행 담당자가 확인한 사실만 추가한다. Luna 구현은 parser 담당과 통합 담당의 실제 실행 기록으로 증명해야 한다.
+Astra/Luna는 역할명이다. 존재하지 않는 모델 호출을 주장하지 않는다. 현재 Astra 작업은 실제 협업 서브에이전트 `/root/astra`에서 수행했다. 상위 실행 담당자 확인에 따른 역할 모델은 Astra `gpt-6-astra`, Luna `gpt-6-luna`이며 상위 Codex 모델명은 미확인이다. Luna 구현은 parser 담당과 통합 담당의 실제 실행 기록으로 증명해야 한다.
 
 2026-10-27 Astra: requirements/architecture/gcode-support-matrix/test-plan/release-checklist/agent-handoffs 사양 작성. 보수적 P0 프로파일과 독립 산술 fixture 사양 승인. 구현 코드 직접 변경 없음. 테스트/공개 배포 승인은 아직 하지 않았다.
 
