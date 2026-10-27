@@ -13,7 +13,8 @@ export const LATHE_STOCK_PRESETS:Record<'standard'|'thread-demo'|'pawn-demo',Lat
 };
 /** Physical-tool preview for the original zero-table-radius G76 reference. */
 export const THREAD_POINT_PREVIEW_GRID:LatheStockGrid=LATHE_STOCK_PRESETS['thread-demo'];
-export type LatheStockResult={ok:true;remaining:Uint8Array;removed:number;angularCells?:number;grid:LatheStockGrid;partial?:boolean;stopLine?:number;stopMessage?:string;phaseUncertainty?:{sourceLine:number;kind:string}[];components?:StockComponent[];componentLabels?:Uint32Array}|{ok:false;message:string;sourceLine?:number};
+export type LatheGridContact={radius:number;z:number;angleDegrees?:number};
+export type LatheStockResult={ok:true;contact?:LatheGridContact;remaining:Uint8Array;removed:number;angularCells?:number;grid:LatheStockGrid;partial?:boolean;stopLine?:number;stopMessage?:string;phaseUncertainty?:{sourceLine:number;kind:string}[];components?:StockComponent[];componentLabels?:Uint32Array}|{ok:false;message:string;sourceLine?:number;contact?:LatheGridContact};
 export type LatheInsertModel='round-nose'|'example-insert';
 /** Rectangular cutting blade, tip centered at the programmed X/Z point. */
 export type PartingToolShape={width:number;length:number};
@@ -56,7 +57,7 @@ export function simulateLatheStock(result:ParseResult,options:ParserOptions,mode
  if(![grid.radius,grid.zMin,grid.zMax,step,nr,nz,angularSegments].every(Number.isFinite)||!(grid.radius>0)||!(step>0)||!(grid.zMax>grid.zMin)||![nr,nz,angularSegments].every(Number.isInteger)||nr<1||nz<1||angularSegments<3||nr*nz*angular>1_000_000||nr*nz*angularSegments>16_000_000||Math.abs(nr-Math.ceil(grid.radius/step))>0||Math.abs(nz*step-(grid.zMax-grid.zMin))>1e-8)return {ok:false,message:'예제 소재 격자 설정이 유효하지 않습니다.'};
  const remaining=new Uint8Array(nr*nz*angular).fill(1),phaseUncertainty:{sourceLine:number;kind:string}[]=[];let removed=0,work=0;
  const index=(r:number,z:number,a:number)=>(z*nr+r)*angular+a;
- const collision=(message:string,sourceLine:number):LatheStockResult=>partial?{ok:true,remaining,removed,grid,partial:true,stopLine:sourceLine,stopMessage:message,...(phaseUncertainty.length?{phaseUncertainty}:{}),...(angular>1?{angularCells:angular}:{})}:{ok:false,message,sourceLine};
+ const collision=(message:string,sourceLine:number,contact:LatheGridContact):LatheStockResult=>partial?{ok:true,remaining,removed,grid,partial:true,stopLine:sourceLine,stopMessage:message,contact,...(phaseUncertainty.length?{phaseUncertainty}:{}),...(angular>1?{angularCells:angular}:{})}:{ok:false,message,sourceLine,contact};
  for(let r=0;r<nr;r++)if((r+.5)*step>grid.radius)for(let z=0;z<nz;z++)for(let a=0;a<angular;a++)remaining[index(r,z,a)]=0;
  for(const segment of result.segments){
   if(!finite(segment.start)||!finite(segment.end)||segment.start.y!==0||segment.end.y!==0||segment.plane!=='XZ')return {ok:false,message:'X/Z 평면의 완전히 알려진 경로만 계산합니다.',sourceLine:segment.sourceLine};
@@ -101,7 +102,7 @@ export function simulateLatheStock(result:ParseResult,options:ParserOptions,mode
     let otherPhaseContact=false;
     for(let z=0;z<nz;z++)for(let r=0;r<nr;r++){
      if(!sweptThreadToolContains({x:(r+.5)*step,z:zMin+(z+.5)*step},a,b,length,halfAngle,tipRadius))continue;
-     if(remaining[index(r,z,angle)])return collision(`나사 공구의 급속 ${t.kind==='approach'?'진입':t.kind==='retract'?'이탈':'위치'} 이동이 예제 소재에 접촉해 계산을 중단했습니다.`,segment.sourceLine);
+     if(remaining[index(r,z,angle)])return collision(`나사 공구의 급속 ${t.kind==='approach'?'진입':t.kind==='retract'?'이탈':'위치'} 이동이 예제 소재에 접촉해 계산을 중단했습니다.`,segment.sourceLine,{radius:(r+.5)*step,z:zMin+(z+.5)*step,angleDegrees:(angle+.5)*360/angular});
      if(!otherPhaseContact)for(let candidate=0;candidate<angular;candidate++)if(candidate!==angle&&remaining[index(r,z,candidate)]){otherPhaseContact=true;break;}
     }
     if(otherPhaseContact&&!phaseUncertainty.some(item=>item.sourceLine===segment.sourceLine&&item.kind===t.kind))phaseUncertainty.push({sourceLine:segment.sourceLine,kind:t.kind});
@@ -132,7 +133,7 @@ export function simulateLatheStock(result:ParseResult,options:ParserOptions,mode
    const x=(r+.5)*step,pointZ=zMin+(z+.5)*step;
    if((threadTool&&[x,-x].some(radial=>sweptThreadToolContains({x:radial,z:pointZ},points[i-1],points[i],threadTool.length,(threadTool.includedAngleDegrees??60)*Math.PI/360,threadTool.tipRadius??0))) || (!blade&&!threadTool&&Math.min(distanceSquared({x,z:pointZ},points[i-1],points[i]),distanceSquared({x:-x,z:pointZ},points[i-1],points[i]))<=radius*radius) || (polygon.length>0 && (insideConvex({x,z:pointZ},polygon)||insideConvex({x:-x,z:pointZ},polygon)))){
     work+=angular;if(work>120_000_000)return {ok:false,message:'선반 형상 계산 범위를 초과했습니다.'};
-    for(let angle=0;angle<angular;angle++){const cell=index(r,z,angle);if(!remaining[cell])continue;if(segment.motion==='G00')return collision('급속 이동 중 예제 공구와 소재가 접촉해 계산을 중단했습니다.',segment.sourceLine);remaining[cell]=0;removed++;}
+    for(let angle=0;angle<angular;angle++){const cell=index(r,z,angle);if(!remaining[cell])continue;if(segment.motion==='G00')return collision('급속 이동 중 예제 공구와 소재가 접촉해 계산을 중단했습니다.',segment.sourceLine,{radius:x,z:pointZ,...(angular>1?{angleDegrees:(angle+.5)*360/angular}:{})});remaining[cell]=0;removed++;}
    }
    }
   }

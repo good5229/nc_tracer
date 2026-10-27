@@ -17,7 +17,7 @@ it('refuses incomplete paths, missing tools, and spindle-synchronized threading'
 it('stops if the example nose meets stock during a rapid move',()=>{
  const code='G21 G90 G18 G8\nT1 M6\nG43\nG0 X0 Z-3\nM30';
  const parsed=parseGcode(code,options);expect(parsed.status).toBe('SUPPORTED');
- const outcome=simulateLatheStock(parsed,options);expect(outcome.ok).toBe(false);if(!outcome.ok)expect(outcome.message).toContain('급속');
+ const outcome=simulateLatheStock(parsed,options);expect(outcome.ok).toBe(false);if(!outcome.ok){expect(outcome.message).toContain('급속');expect(outcome.contact).toEqual({radius:.1,z:-2.9});}
 });
 
 it('uses loaded-tool G70 moves in the example stock calculation',()=>{
