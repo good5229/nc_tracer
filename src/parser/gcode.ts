@@ -453,7 +453,8 @@ function parseCore(text: string, options: ParserOptions, originalSource = text):
         latheComp.metadata.set(sourceLine,{rawCode,feed:state.feed,spindle:state.spindle,tool:loadedTool,distanceMode:state.distanceMode});
         const checked=linuxCncLatheNoseLines(latheComp.start,latheComp.moves,latheComp.diameter,latheComp.side,latheComp.orientation,options.linuxcncPawnContourReference===true);
         if(!checked.ok){
-          if(options.linuxcncPawnContourReference && checked.code==='CONCAVE_GOUGING'){
+          if(checked.committed?.length && !flushLatheComp(latheComp,sourceLine,checked.committed)){stopped=true;break;}
+          if(!checked.committed && options.linuxcncPawnContourReference && checked.code==='CONCAVE_GOUGING'){
             let prior:LatheCompMove[]=[];
             for(let n=1;n<=latheComp.moves.length;n++){
               if(latheComp.moves[n-1].motion==='G00_BYPASS')continue;

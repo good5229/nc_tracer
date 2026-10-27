@@ -31,7 +31,7 @@ export type LatheInputArc={end:LatheNosePoint;center:LatheNosePoint;motion:'G02'
 export type LatheBypass={end:LatheNosePoint;motion:'G00_BYPASS';sourceLine:number};
 export type LatheInputMove=LatheLine|LatheInputArc|LatheBypass;
 export type LatheCompMove={start:LatheNosePoint;end:LatheNosePoint;motion:'G00'|'G01'|'G02'|'G03';sourceLine:number;center?:LatheNosePoint};
-export type LatheCompLines={ok:true;moves:LatheCompMove[]}|{ok:false;code:string;sourceLine:number};
+export type LatheCompLines={ok:true;moves:LatheCompMove[]}|{ok:false;code:string;sourceLine:number;committed?:LatheCompMove[]};
 export const latheNoseOriginOffset=(orientation:number,r:number):LatheNosePoint=>({x:orientation===2||orientation===6||orientation===1?-r:orientation===3||orientation===8||orientation===4?r:0,z:orientation===2||orientation===7||orientation===3?-r:orientation===1||orientation===5||orientation===4?r:0});
 const plus=(a:LatheNosePoint,b:LatheNosePoint):LatheNosePoint=>({x:a.x+b.x,z:a.z+b.z});
 const cross=(a:LatheNosePoint,b:LatheNosePoint)=>a.z*b.x-a.x*b.z;
@@ -53,11 +53,11 @@ export function linuxCncLatheNoseLines(start:LatheNosePoint,lines:LatheInputMove
  const radius=diameter/2, shift=latheNoseOriginOffset(orientation,radius),toolPoint=(point:LatheNosePoint)=>plus(point,shift);
  const moves:LatheCompMove[]=[{start:{...start},end:first.toolOrigin,motion:lines[0].motion,sourceLine:lines[0].sourceLine}];
  let programStart={...start},programPoint={...lines[0].end},center={...first.center};
- let previousArc=false,previousTangent:LatheNosePoint|undefined,bypassed=false,queuedOriginalStart:LatheNosePoint|undefined;
+ let previousArc=false,previousTangent:LatheNosePoint|undefined,bypassed=false,queuedOriginalStart:LatheNosePoint|undefined,queuedFirst=false;
  for(let i=1;i<lines.length;i++){
   const line=lines[i],a=previousTangent??sub(programPoint,programStart),isArc=line.motion==='G02'||line.motion==='G03';
   if(line.motion==='G00_BYPASS'){
-   const queued=moves.pop();
+   queuedFirst=moves.length===1;const queued=moves.pop();
    if(bypassed||!queued||queued.center||queued.motion==='G02'||queued.motion==='G03')return error('UNSUPPORTED_COMP_G70_QUEUE',line.sourceLine);
    queuedOriginalStart={...queued.start};moves.push({start:queued.start,end:{...line.end},motion:'G00',sourceLine:line.sourceLine},{...queued,start:{...line.end}});
    center={...line.end};bypassed=true;continue;
@@ -70,13 +70,26 @@ export function linuxCncLatheNoseLines(start:LatheNosePoint,lines:LatheInputMove
    if(side==='left' && adjustedTheta<alpha)adjustedTheta+=2*Math.PI;
    if(side==='right' && alpha<adjustedTheta)alpha+=2*Math.PI;
    const beta=(side==='left'?adjustedTheta-alpha:alpha-adjustedTheta)-Math.PI/2,gamma=side==='left'?Math.PI/2:-Math.PI/2;
-   if(!Number.isFinite(beta)||!(beta < -0.01 || beta > Math.PI+0.01))return error('UNSUPPORTED_COMP_G70_QUEUE',line.sourceLine);
-   const retreat=radius/Math.tan((beta+Math.PI)/2),mid={z:center.z+retreat*Math.cos(adjustedTheta+gamma),x:center.x+retreat*Math.sin(adjustedTheta+gamma)};
-   const pending=moves[moves.length-1],delta=sub(mid,sub(queuedOriginalStart!,shift)),direction=sub(programPoint,programStart);
-   if(![retreat,mid.x,mid.z].every(Number.isFinite)||delta.x*direction.x+delta.z*direction.z<0)return error('CONCAVE_GOUGING',line.sourceLine);
-   pending.end=toolPoint(mid);
+   if(!Number.isFinite(beta))return error('UNSUPPORTED_COMP_G70_QUEUE',line.sourceLine);
+   const pending=moves[moves.length-1],programDirection=sub(programPoint,programStart);
+   // LinuxCNC records the *normal* as the queued first entry's direction;
+   // subsequent queued straight moves use their programmed direction.
+   const entryAngle=Math.atan2(programDirection.x,programDirection.z)+(side==='left'?Math.PI/2:-Math.PI/2);
+   const direction=queuedFirst?{z:Math.cos(entryAngle),x:Math.sin(entryAngle)}:programDirection;
+   const oldStart=queuedFirst?queuedOriginalStart!:sub(queuedOriginalStart!,shift);
+   const checkClip=(point:LatheNosePoint)=>{const delta=sub(point,oldStart);return delta.x*direction.x+delta.z*direction.z>=0;};
+   if(beta < -0.01 || beta > Math.PI+0.01){
+    const retreat=radius/Math.tan((beta+Math.PI)/2),mid={z:center.z+retreat*Math.cos(adjustedTheta+gamma),x:center.x+retreat*Math.sin(adjustedTheta+gamma)};
+    if(![retreat,mid.x,mid.z].every(Number.isFinite)||!checkClip(mid))return {ok:false,code:'CONCAVE_GOUGING',sourceLine:line.sourceLine,committed:moves.slice(0,-1)};
+    pending.end=toolPoint(mid);
+   }else if(beta>0.01){
+    if(!checkClip(center))return {ok:false,code:'CONCAVE_GOUGING',sourceLine:line.sourceLine,committed:moves.slice(0,-1)};
+    pending.end=toolPoint(center);
+    const mid={z:programPoint.z+radius*Math.cos(alpha+gamma),x:programPoint.x+radius*Math.sin(alpha+gamma)},end=toolPoint(mid);
+    moves.push({start:pending.end,end,motion:line.motion==='G00'?'G00':side==='left'?'G02':'G03',sourceLine:line.sourceLine,...(line.motion==='G01'?{center:toolPoint(programPoint)}:{})});
+   }
    const nextEnd={z:line.end.z+radius*Math.cos(alpha+gamma),x:line.end.x+radius*Math.sin(alpha+gamma)};
-   moves.push({start:pending.end,end:toolPoint(nextEnd),motion:line.motion,sourceLine:line.sourceLine});
+   moves.push({start:moves[moves.length-1].end,end:toolPoint(nextEnd),motion:line.motion,sourceLine:line.sourceLine});
    center=nextEnd;programStart=programPoint;programPoint={...line.end};previousArc=false;previousTangent=undefined;bypassed=false;queuedOriginalStart=undefined;continue;
   }
   let b:LatheNosePoint,arcEndTangent:LatheNosePoint|undefined,arcCenter:LatheNosePoint|undefined;

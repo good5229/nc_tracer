@@ -2,6 +2,7 @@ import {describe,expect,it} from 'vitest';
 import {readFileSync} from 'node:fs';
 import {parseGcode} from '../../src/parser/gcode';
 import reference from '../fixtures/linuxcnc-lathe-comp-reference.json';
+import priorDirections from '../fixtures/linuxcnc-g70-prior-directions.json';
 const settings={controllerProfile:'linuxcnc' as const,linuxcncLatheToolReference:{tools:{}},initialPosition:{x:0,y:0,z:0},initialDistanceMode:'absolute' as const};
 describe('LinuxCNC explicit lathe compensation profile',()=>{
  for(const name of ['lathe_comp_left','lathe_comp_right','lathe_comp_arc'] as const)it(`matches ${name}`,()=>{
@@ -145,8 +146,22 @@ it('matches LinuxCNC when a compensated move precedes multipass G70',()=>{
  const canonical=[['G00',10,3],['G00',10,1],['G01',9.8166,.8],['G00',4,.6306],['G01',4,-5],['G00',10,1],['G01',9.247,.9843],['G00',4,.1394],['G01',4,-5],['G01',7.8,-5],['G00',12,-5]] as const;
  expect(result.segments).toHaveLength(canonical.length);result.segments.forEach((s,i)=>{expect(s.motion,`motion ${i}`).toBe(canonical[i][0]);expect(s.end.x,`X ${i}`).toBeCloseTo(canonical[i][1],4);expect(s.end.z,`Z ${i}`).toBeCloseTo(canonical[i][2],4);if(i)expect(s.start).toEqual(result.segments[i-1].end);});
 });
-it('stops conservatively when a prior compensated move ends at the G70 anchor',()=>{
+it('identifies gouging when a prior compensated move ends at the G70 anchor',()=>{
  const source=readFileSync(new URL('../fixtures/g70_comp_pre_at_anchor.ngc',import.meta.url),'utf8');
  const table={...settings,linuxcncLatheToolReference:{tools:{'1':{diameter:.4,orientation:2,offsetX:0,offsetZ:0}}}};
- const result=parseGcode(source,table);expect(result.status).toBe('PARTIAL');expect(result.warnings.at(-1)?.code).toBe('UNSUPPORTED_COMP_G70_QUEUE');
+ const result=parseGcode(source,table);expect(result.status).toBe('PARTIAL');expect(result.warnings.at(-1)?.code).toBe('CONCAVE_GOUGING');
+ expect(result.segments.map(s=>[s.motion,s.end.x,s.end.z])).toEqual([['G00',10,3],['G00',10,1]]);
+});
+
+it.each(['right_x9','left_x11','left_z1','left_z2'] as const)('matches the LinuxCNC compensated G70 reference for %s',name=>{
+ const source=readFileSync(new URL(`../fixtures/g70_comp_pre_${name}.ngc`,import.meta.url),'utf8');
+ const table={...settings,linuxcncLatheToolReference:{tools:{'1':{diameter:.4,orientation:2,offsetX:0,offsetZ:0}}}};
+ const result=parseGcode(source,table),expected=priorDirections[name];expect(result.status).toBe('SUPPORTED');expect(result.warnings).toEqual([]);expect(result.segments).toHaveLength(expected.length);
+ result.segments.forEach((segment,i)=>{expect(segment.motion,`${name} move ${i}`).toBe(expected[i].motion);expect(segment.end.x,`${name} X ${i}`).toBeCloseTo(expected[i].end[0],4);expect(segment.end.z,`${name} Z ${i}`).toBeCloseTo(expected[i].end[1],4);if(i)expect(segment.start).toEqual(result.segments[i-1].end);});
+});
+it.each(['right_x11','right_z0','left_x9','left_z0'] as const)('matches the LinuxCNC gouging stop for %s',name=>{
+ const source=readFileSync(new URL(`../fixtures/g70_comp_pre_${name}.ngc`,import.meta.url),'utf8');
+ const table={...settings,linuxcncLatheToolReference:{tools:{'1':{diameter:.4,orientation:2,offsetX:0,offsetZ:0}}}};
+ const result=parseGcode(source,table);expect(result.status).toBe('PARTIAL');expect(result.warnings.at(-1)?.code).toBe('CONCAVE_GOUGING');
+ expect(result.segments.map(s=>[s.motion,s.end.x,s.end.z])).toEqual([['G00',10,3],['G00',10,1]]);
 });
