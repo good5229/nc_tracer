@@ -58,7 +58,8 @@ export function linuxCncLatheNoseLines(start:LatheNosePoint,lines:LatheInputMove
   const line=lines[i],a=previousTangent??sub(programPoint,programStart),isArc=line.motion==='G02'||line.motion==='G03';
   if(line.motion==='G00_BYPASS'){
    queuedFirst=moves.length===1;const queued=moves.pop();
-   if(bypassed||!queued||queued.center||queued.motion==='G02'||queued.motion==='G03')return error('UNSUPPORTED_COMP_G70_QUEUE',line.sourceLine);
+   if(bypassed||!queued)return error('UNSUPPORTED_COMP_G70_QUEUE',line.sourceLine);
+   if(queued.center||queued.motion==='G02'||queued.motion==='G03')return {ok:false,code:'UNSUPPORTED_COMP_G70_ARC_QUEUE',sourceLine:line.sourceLine,committed:[...moves,{start:queued.start,end:{...line.end},motion:'G00',sourceLine:line.sourceLine}]};
    queuedOriginalStart={...queued.start};moves.push({start:queued.start,end:{...line.end},motion:'G00',sourceLine:line.sourceLine},{...queued,start:{...line.end}});
    center={...line.end};bypassed=true;continue;
   }

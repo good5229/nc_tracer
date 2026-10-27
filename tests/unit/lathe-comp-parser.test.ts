@@ -173,3 +173,10 @@ it.each(['left_x11','left_x9','left_z0','left_z15','right_x11','right_x9','right
  const result=parseGcode(source,table),expected=twoMoves[name];expect(result.status).toBe(expected.status);if(expected.status==='PARTIAL')expect(result.warnings.at(-1)?.code).toBe('CONCAVE_GOUGING');
  expect(result.segments).toHaveLength(expected.moves.length);result.segments.forEach((segment,i)=>{expect(segment.motion,`${name} move ${i}`).toBe(expected.moves[i].motion);expect(segment.end.x,`${name} X ${i}`).toBeCloseTo(expected.moves[i].end[0],4);expect(segment.end.z,`${name} Z ${i}`).toBeCloseTo(expected.moves[i].end[1],4);if(i)expect(segment.start).toEqual(result.segments[i-1].end);});
 });
+it.each(['left_ccw','left_cw','right_ccw','right_cw'] as const)('preserves the verified prefix and refuses the queued arc for %s',name=>{
+ const source=readFileSync(new URL(`../fixtures/g70_comp_pre_arc_${name}.ngc`,import.meta.url),'utf8');
+ const table={...settings,linuxcncLatheToolReference:{tools:{'1':{diameter:.4,orientation:2,offsetX:0,offsetZ:0}}}};
+ const result=parseGcode(source,table);expect(result.status).toBe('PARTIAL');expect(result.warnings.at(-1)?.code).toBe('UNSUPPORTED_COMP_G70_ARC_QUEUE');
+ const expected=[['G00',10,3],['G01',name.startsWith('left')?9.6:10,1.8],['G00',10,1]] as const;
+ expect(result.segments).toHaveLength(expected.length);result.segments.forEach((segment,i)=>{expect(segment.motion).toBe(expected[i][0]);expect(segment.end.x).toBeCloseTo(expected[i][1],4);expect(segment.end.z).toBeCloseTo(expected[i][2],4);if(i)expect(segment.start).toEqual(result.segments[i-1].end);});
+});
