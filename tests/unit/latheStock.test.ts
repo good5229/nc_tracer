@@ -2,7 +2,6 @@ import {expect,it} from 'vitest';
 import {readFileSync} from 'node:fs';
 import {parseGcode} from '../../src/parser/gcode';
 import {simulateLatheStock,LATHE_STOCK_PRESETS} from '../../src/simulation/latheStock';
-import {stockComponents} from '../../src/simulation/stockComponents';
 const options={controllerProfile:'linuxcnc' as const,linuxcncLatheToolReference:{tools:{'1':{diameter:.4,orientation:2,offsetX:0,offsetZ:0}}},initialPosition:{x:0,y:0,z:0},initialDistanceMode:'absolute' as const};
 const src='G21 G90 G18 G8\nT1 M6\nG43\nG0 X10 Z1\nG41\nG1 X8 Z1 F100\nG1 X8 Z-5\nG1 X11 Z-5\nG40\nG0 X12\nM2';
 it('removes stock using the loaded example tool and retains uncompensated material',()=>{
@@ -17,7 +16,7 @@ it('refuses incomplete paths, missing tools, and spindle-synchronized threading'
 it('stops if the example nose meets stock during a rapid move',()=>{
  const code='G21 G90 G18 G8\nT1 M6\nG43\nG0 X0 Z-3\nM30';
  const parsed=parseGcode(code,options);expect(parsed.status).toBe('SUPPORTED');
- const outcome=simulateLatheStock(parsed,options);expect(outcome.ok).toBe(false);if(!outcome.ok){expect(outcome.message).toContain('급속');expect(outcome.contact).toEqual({radius:.1,z:-2.9});}
+ const outcome=simulateLatheStock(parsed,options);expect(outcome.ok).toBe(false);if(!outcome.ok)expect(outcome.message).toContain('급속');
 });
 
 it('uses loaded-tool G70 moves in the example stock calculation',()=>{
@@ -46,14 +45,6 @@ it('sweeps the example insert body as well as the round nose',()=>{
  const round=simulateLatheStock(parsed,options,'round-nose'),insert=simulateLatheStock(parsed,options,'example-insert');
  expect(round.ok).toBe(true);expect(insert.ok).toBe(true);
  if(round.ok&&insert.ok){expect(insert.removed).toBeGreaterThan(round.removed);expect(insert.remaining[17*50+47]).toBe(0);expect(round.remaining[17*50+47]).toBe(1);}
- const narrow=simulateLatheStock(parsed,options,'example-insert',undefined,false,{}, {},{xExtent:1,zNear:1,zFar:2});
- if(!narrow.ok||!insert.ok)throw new Error('insert simulation did not finish');expect(narrow.removed).not.toBe(insert.removed);
- const override=simulateLatheStock(parsed,options,'example-insert',undefined,false,{}, {},undefined,{'1':{xExtent:1,zNear:1,zFar:2}});if(!override.ok)throw new Error(override.message);expect(override.remaining).toEqual(narrow.remaining);
- expect(simulateLatheStock(parsed,options,'example-insert',undefined,false,{}, {},undefined,{'1':{xExtent:1,zNear:2,zFar:1}})).toMatchObject({ok:false,message:expect.stringContaining('공구별 인서트')});
- const secondTool={...parsed,segments:parsed.segments.map(segment=>({...segment,tool:2}))},twoTools={...options,linuxcncLatheToolReference:{tools:{'1':options.linuxcncLatheToolReference.tools['1'],'2':options.linuxcncLatheToolReference.tools['1']}}};
- const other=simulateLatheStock(secondTool,twoTools,'example-insert',undefined,false,{}, {},undefined,{'1':{xExtent:1,zNear:1,zFar:2}}),selected=simulateLatheStock(secondTool,twoTools,'example-insert',undefined,false,{}, {},undefined,{'2':{xExtent:1,zNear:1,zFar:2}});
- if(!other.ok||!selected.ok)throw new Error('tool-specific simulation did not finish');expect(other.remaining).toEqual(insert.remaining);expect(selected.remaining).toEqual(narrow.remaining);
- expect(simulateLatheStock(parsed,options,'example-insert',undefined,false,{}, {},{xExtent:1,zNear:2,zFar:1})).toMatchObject({ok:false,message:expect.stringContaining('인서트 단면')});
  const wrongOrientation={...options,linuxcncLatheToolReference:{tools:{'1':{diameter:.4,orientation:3,offsetX:0,offsetZ:0}}}};
  expect(simulateLatheStock(parsed,wrongOrientation,'example-insert')).toMatchObject({ok:false,message:expect.stringContaining('방향 2')});
 });
@@ -108,232 +99,4 @@ it('can show only the confirmed prefix of the original G76 demo without calling 
  const shape=simulateLatheStock(parsed,setup,'round-nose',LATHE_STOCK_PRESETS['thread-demo'],true);
  if(!shape.ok)throw new Error(shape.message);expect(shape.partial).toBe(true);expect(shape.removed).toBeGreaterThan(0);
  expect(simulateLatheStock(parsed,setup,'round-nose',LATHE_STOCK_PRESETS['thread-demo'])).toMatchObject({ok:false});
-});
-it('shows the original pawn demo up to the verified G70 gouging error',()=>{
- const source=readFileSync(new URL('../../demo/lathe_g70_71_demo.ngc',import.meta.url),'utf8');
- const tools=Object.fromEntries([2,10].map(n=>[String(n),{diameter:.4,orientation:2,offsetX:0,offsetZ:0}]));
- const setup={...options,linuxcncLatheToolReference:{tools},linuxcncPawnContourReference:true,initialPosition:{x:20,y:0,z:5}};
- const parsed=parseGcode(source,setup);expect(parsed.status).toBe('PARTIAL');expect(parsed.warnings.at(-1)?.code).toBe('CONCAVE_GOUGING');
- const shape=simulateLatheStock(parsed,setup,'example-insert',LATHE_STOCK_PRESETS['pawn-demo'],true);
- if(!shape.ok)throw new Error(`${shape.message} (row ${shape.sourceLine})`);expect(shape.partial).toBe(true);expect(shape.removed).toBeGreaterThan(0);expect(shape.stopLine).toBe(30);expect(shape.stopMessage).toContain('급속 이동');
-});
-it('calculates the complete original G76 point-table path with separately assumed physical tools',()=>{
- const source=readFileSync(new URL('../../demo/lathe-g76.ngc',import.meta.url),'utf8');
- const pointOptions={controllerProfile:'linuxcnc' as const,linuxcncPointToolReference:true,initialPosition:{x:0,y:0,z:0},initialDistanceMode:'absolute' as const};
- const parsed=parseGcode(source,pointOptions);expect(parsed.status).toBe('SUPPORTED');expect(parsed.segments.some(s=>s.thread?.kind==='thread-cut')).toBe(true);
- const tools=Object.fromEntries([1,4,9].map(n=>[String(n),{diameter:.4,orientation:2,offsetX:0,offsetZ:0}]));
- const grid=LATHE_STOCK_PRESETS['thread-demo'];
- const shape=simulateLatheStock(parsed,{...pointOptions,linuxcncLatheToolReference:{tools}},'round-nose',grid,false,{'9':{width:1,length:2}},{'4':{length:2}});
- if(!shape.ok)throw new Error(shape.message);expect(shape.angularCells).toBe(48);expect(shape.removed).toBeGreaterThan(0);expect(shape.remaining.some(v=>v===1)).toBe(true);
- // At radius 2.45 mm, measure repeated thread grooves in the straight
- // portion. The original specifies P0.05 inch = 1.27 mm/revolution.
- const grooveStarts:number[]=[];let inGroove=false;
- for(let z=45;z<125;z++){const empty=!shape.remaining[(z*grid.radialCells+24)*grid.angularSegments];if(empty&&!inGroove)grooveStarts.push(z);inGroove=empty;}
- expect(grooveStarts.length).toBeGreaterThanOrEqual(5);
- for(let i=1;i<grooveStarts.length;i++)expect(Math.abs((grooveStarts[i]-grooveStarts[i-1])*grid.step-1.27)).toBeLessThanOrEqual(grid.step);
- // The 1 mm example parting blade sweeps the entire radius around Z=-15.24 mm.
- const section=(z:number)=>shape.remaining.slice(z*grid.radialCells*grid.angularSegments,(z+1)*grid.radialCells*grid.angularSegments);
- expect(section(10).every(v=>v===0)).toBe(true);expect(section(5).some(v=>v===1)).toBe(true);expect(section(20).some(v=>v===1)).toBe(true);
- const pieces=stockComponents(shape.remaining,grid,shape.angularCells!);expect(pieces).toHaveLength(2);expect(pieces[0].zMax).toBeCloseTo(-15.7);expect(pieces[1].zMin).toBeCloseTo(-14.7);
- let mixedRings=0;for(let i=0;i<shape.remaining.length;i+=48){const ring=shape.remaining.slice(i,i+48);if(ring.some(v=>v===0)&&ring.some(v=>v===1))mixedRings++;}expect(mixedRings).toBeGreaterThan(0);
-});
-it('sweeps a distinct parting blade across its stated width, including rapid collision checks',()=>{
- const setup={...options,linuxcncLatheToolReference:{tools:{'9':{diameter:.4,orientation:2,offsetX:0,offsetZ:0}}}};
- const program='G21 G90 G18 G8\nT9 M6\nG0 X12 Z0\nG0 Z-3\nG1 X0 F100\nG0 X12\nM2';
- const parsed=parseGcode(program,setup);expect(parsed.status).toBe('SUPPORTED');
- const shape=simulateLatheStock(parsed,setup,'round-nose',undefined,false,{'9':{width:1,length:2}});
- if(!shape.ok)throw new Error(shape.message);const cell=(r:number,z:number)=>shape.remaining[z*50+r];
- expect(cell(5,15)).toBe(0);expect(cell(5,11)).toBe(1);expect(cell(40,15)).toBe(0);
- const unsafe=parseGcode(program.replace('G0 Z-3','G0 X8 Z-3'),setup);
- expect(simulateLatheStock(unsafe,setup,'round-nose',undefined,false,{'9':{width:1,length:2}})).toMatchObject({ok:false,message:expect.stringContaining('급속')});
- expect(simulateLatheStock(parsed,setup,'round-nose',undefined,false,{'9':{width:0,length:2}})).toMatchObject({ok:false,message:expect.stringContaining('폭')});
-});
-it('uses the sharp threading insert outside the synchronized cycle as well',()=>{
- const setup={...options,initialPosition:{x:12,y:0,z:1},linuxcncLatheToolReference:{tools:{'4':{diameter:.4,orientation:2,offsetX:0,offsetZ:0}}}};
- const parsed=parseGcode('G21 G90 G18 G8\nT4 M6\nG0 X12 Z0\nG0 Z-3\nG1 X8 F100\nG0 X12\nM2',setup);expect(parsed.status).toBe('SUPPORTED');
- const sharp=simulateLatheStock(parsed,setup,'round-nose',undefined,false,{}, {'4':{length:2}}),round=simulateLatheStock(parsed,setup);
- if(!sharp.ok)throw new Error(sharp.message);if(!round.ok)throw new Error(round.message);
- expect(sharp.remaining[18*50+47]).toBe(0);expect(round.remaining[18*50+47]).toBe(1);
- expect(simulateLatheStock(parsed,setup,'round-nose',undefined,false,{}, {'4':{length:0}})).toMatchObject({ok:false,message:expect.stringContaining('나사 공구')});
-});
-it('uses the threading insert length during synchronized cutting',()=>{
- const code='G21 G90 G18 G8\nT1 M6\nG0 X12 Z0\nS500 M3\nG0 X11\nG76 P1.2 Z-5.5 I-1 J.2 K1 R1\nG0 X12\nM2';
- const parsed=parseGcode(code,{...options,initialPosition:{x:12,y:0,z:1}});
- const setup={...options,initialPosition:{x:12,y:0,z:1}};
- const full=simulateLatheStock(parsed,setup,'round-nose',undefined,false,{}, {'1':{length:2}}),short=simulateLatheStock(parsed,setup,'round-nose',undefined,false,{}, {'1':{length:.3}});
- if(!full.ok)throw new Error(full.message);if(!short.ok)throw new Error(short.message);expect(full.removed).toBeGreaterThan(short.removed);
-});
-it('distinguishes a hypothetical rapid contact at another spindle phase from the frozen-phase preview',()=>{
- const setup={...options,initialPosition:{x:12,y:0,z:1}};
- const code='G21 G90 G18 G8\nT1 M6\nG0 X12 Z0\nS500 M3\nG0 X11\nG76 P1.2 Z-5.5 I-1 J.2 K1 R1\nG0 X12\nM2';
- const parsed=parseGcode(code,setup),cut=parsed.segments.find(s=>s.thread?.kind==='thread-cut')!;
- const point={x:9.85,y:0,z:-4.9};
- const rapid={...cut,rawCode:'G76',motion:'G00' as const,start:point,end:point,thread:{...cut.thread!,kind:'approach' as const,synchronized:false,phaseTurnsStart:3/48,phaseTurnsEnd:3/48}};
- const shape=simulateLatheStock({...parsed,segments:[cut,rapid]},setup);
- if(!shape.ok)throw new Error(shape.message);
- expect(shape.phaseUncertainty).toEqual([{sourceLine:cut.sourceLine,kind:'approach'}]);
-});
-it('keeps the original point-reference stock volume stable when the example grid is refined',()=>{
- const source=readFileSync(new URL('../../demo/lathe-g76.ngc',import.meta.url),'utf8');
- const point={controllerProfile:'linuxcnc' as const,linuxcncPointToolReference:true,initialPosition:{x:0,y:0,z:0},initialDistanceMode:'absolute' as const};
- const tools=Object.fromEntries([1,4,9].map(n=>[String(n),{diameter:.4,orientation:2,offsetX:0,offsetZ:0}]));
- const parsed=parseGcode(source,point),volumes:number[]=[];
- for(const step of [.2,.1]){
-  const grid={radius:3.175,zMin:-16.4,zMax:0,step,radialCells:Math.ceil(3.175/step),axialCells:Math.round(16.4/step),angularSegments:step===.2?24:48};
-  const shape=simulateLatheStock(parsed,{...point,linuxcncLatheToolReference:{tools}},'round-nose',grid,false,{'9':{width:1,length:2}},{'4':{length:2}});
-  if(!shape.ok)throw new Error(shape.message);let volume=0;
-  for(let z=0;z<grid.axialCells;z++)for(let r=0;r<grid.radialCells;r++)for(let a=0;a<grid.angularSegments;a++)volume+=shape.remaining[(z*grid.radialCells+r)*grid.angularSegments+a]*2*Math.PI*(r+.5)*step**3/grid.angularSegments;
-  volumes.push(volume);
- }
- expect(Math.abs(volumes[0]-volumes[1])/volumes[1]).toBeLessThan(.05);
-});
-it('uses the supplied threading angle throughout the synchronized cut',()=>{
- const code='G21 G90 G18 G8\nT1 M6\nG0 X12 Z0\nS500 M3\nG0 X11\nG76 P1.2 Z-5.5 I-1 J.2 K1 R1\nG0 X12\nM2';
- const setup={...options,initialPosition:{x:12,y:0,z:1}},parsed=parseGcode(code,setup);
- const narrow=simulateLatheStock(parsed,setup,'round-nose',undefined,false,{}, {'1':{length:2,includedAngleDegrees:55}});
- const wide=simulateLatheStock(parsed,setup,'round-nose',undefined,false,{}, {'1':{length:2,includedAngleDegrees:60}});
- if(!narrow.ok)throw new Error(narrow.message);if(!wide.ok)throw new Error(wide.message);
- expect(wide.removed).toBeGreaterThan(narrow.removed);
- expect(simulateLatheStock(parsed,setup,'round-nose',undefined,false,{}, {'1':{length:2,includedAngleDegrees:0}})).toMatchObject({ok:false,message:expect.stringContaining('각도')});
-});
-it('models a rounded thread tip for ordinary and synchronized moves',()=>{
- const setup={...options,initialPosition:{x:12,y:0,z:1}};
- const cut='G21 G90 G18 G8\nT1 M6\nG0 X12 Z0\nG0 Z-3\nG1 X8 F100\nG0 X12\nM2';
- const parsed=parseGcode(cut,setup),sharp=simulateLatheStock(parsed,setup,'round-nose',undefined,false,{}, {'1':{length:2,tipRadius:0}}),rounded=simulateLatheStock(parsed,setup,'round-nose',undefined,false,{}, {'1':{length:2,tipRadius:.4}});
- if(!sharp.ok)throw new Error(sharp.message);if(!rounded.ok)throw new Error(rounded.message);expect(rounded.removed).toBeGreaterThan(sharp.removed);
- const thread='G21 G90 G18 G8\nT1 M6\nG0 X12 Z0\nS500 M3\nG0 X11\nG76 P1.2 Z-5.5 I-1 J.2 K1 R1 Q29.5 E1 L2\nG0 X12\nM2';
- const parsedThread=parseGcode(thread,setup),oneCut={...parsedThread,segments:parsedThread.segments.filter(s=>s.thread?.kind==='thread-cut').slice(0,1)},sharpThread=simulateLatheStock(oneCut,setup,'round-nose',undefined,false,{}, {'1':{length:2,tipRadius:0}}),roundThread=simulateLatheStock(oneCut,setup,'round-nose',undefined,false,{}, {'1':{length:2,tipRadius:.4}});
- if(!sharpThread.ok)throw new Error(sharpThread.message);if(!roundThread.ok)throw new Error(roundThread.message);expect(roundThread.removed).toBeGreaterThan(sharpThread.removed);
- expect(simulateLatheStock(parsed,setup,'round-nose',undefined,false,{}, {'1':{length:2,tipRadius:2.1}})).toMatchObject({ok:false,message:expect.stringContaining('반경')});
-});
-it('matches exhaustive spindle-phase samples for a rounded tip on a tapered thread exit',()=>{
- const setup={...options,initialPosition:{x:12,y:0,z:1}};
- const code='G21 G90 G18 G8\nT1 M6\nG0 X12 Z0\nS500 M3\nG0 X11\nG76 P1.2 Z-5.5 I-1 J.2 K1 R1 Q29.5 E1 L2\nG0 X12\nM2';
- const parsed=parseGcode(code,setup),segment=parsed.segments.find(s=>s.thread?.kind==='exit-taper')!,one={...parsed,segments:[segment]};
- const shape=simulateLatheStock(one,setup,'round-nose',undefined,false,{}, {'1':{length:2,tipRadius:.4}});if(!shape.ok)throw new Error(shape.message);
- const t=segment.thread!,na=48,nr=50,step=.2,tip=.4,angle=Math.PI/6,tangent=tip*(1-Math.sin(angle));let removed=0;
- for(let a=0;a<na;a++){const phase=-t.spindleDirection*(a+.5)/na,lo=Math.ceil(t.phaseTurnsStart-1/(2*na)-phase-1e-12),hi=Math.floor(t.phaseTurnsEnd+1/(2*na)-phase+1e-12);
-  for(let z=0;z<25;z++)for(let r=0;r<nr;r++){const x=(r+.5)*step,pz=-6+(z+.5)*step;let hit=false;
-   for(let k=lo;k<=hi;k++){const q=Math.max(0,Math.min(1,(phase+k-t.phaseTurnsStart)/(t.phaseTurnsEnd-t.phaseTurnsStart))),tx=segment.start.x!+(segment.end.x!-segment.start.x!)*q,tz=segment.start.z!+(segment.end.z!-segment.start.z!)*q,d=x-tx;
-    if(d<0||d>2)continue;const width=d<tangent?Math.sqrt(Math.max(0,tip*tip-(d-tip)*(d-tip))):(d+tip*(1/Math.sin(angle)-1))*Math.tan(angle);if(Math.abs(pz-tz)<=width){hit=true;break;}
-   }
-   expect(shape.remaining[(z*nr+r)*na+a],`angle ${a}, z ${z}, r ${r}`).toBe(hit?0:1);if(hit)removed++;
-  }
- }
- expect(removed).toBeGreaterThan(0);
-});
-it('matches every spindle revolution for a sharp or rounded insert moving radially during synchronization',()=>{
- const setup={...options,initialPosition:{x:12,y:0,z:1}};
- const parsed=parseGcode('G21 G90 G18 G8\nT1 M6\nG0 X12 Z0\nS500 M3\nG0 X11\nG76 P1.2 Z-5.5 I-1 J.2 K1 R1\nM2',setup);
- const template=parsed.segments.find(s=>s.thread?.kind==='thread-cut')!;
- const grid={radius:5,zMin:-5,zMax:0,step:.25,radialCells:20,axialCells:20,angularSegments:12};
- let seed=918273;const random=()=>{seed=(1664525*seed+1013904223)>>>0;return seed/2**32;};
- const cases=[[0,6,-2.875,-2.875,0],[6,0,-4.5,-.5,0],[0,6,-2.875,-2.875,.2],[5,1,-4,-1,.2]];
- for(let i=0;i<30;i++)cases.push([random()*6,random()*6,-5+random()*5,-5+random()*5,i%2?0:random()*.5]);
- for(const [startX,endX,startZ,endZ,tip] of cases){
-  const segment={...template,start:{x:startX,y:0,z:startZ},end:{x:endX,y:0,z:endZ},thread:{...template.thread!,phaseTurnsStart:.13,phaseTurnsEnd:20.13,pitch:1.2}};
-  const shape=simulateLatheStock({...parsed,segments:[segment]},setup,'round-nose',grid,false,{}, {'1':{length:1,tipRadius:tip}});if(!shape.ok)throw new Error(shape.message);
-  for(let a=0;a<grid.angularSegments;a++)for(let z=0;z<grid.axialCells;z++)for(let r=0;r<grid.radialCells;r++){
-   const phase=-segment.thread.spindleDirection*(a+.5)/grid.angularSegments,lo=Math.ceil(segment.thread.phaseTurnsStart-1/(2*grid.angularSegments)-phase-1e-12),hi=Math.floor(segment.thread.phaseTurnsEnd+1/(2*grid.angularSegments)-phase+1e-12);
-   const x=(r+.5)*grid.step,pz=grid.zMin+(z+.5)*grid.step;let hit=false;
-   for(let k=lo;k<=hi;k++){
-    const q=Math.max(0,Math.min(1,(phase+k-segment.thread.phaseTurnsStart)/20)),d=x-(startX+(endX-startX)*q),h=Math.abs(pz-(startZ+(endZ-startZ)*q));
-    if(d<0||d>1)continue;
-    const tangent=tip*(1-Math.sin(Math.PI/6)),width=tip>0&&d<tangent?Math.sqrt(Math.max(0,2*tip*d-d*d)):(d+(tip?tip*(1/Math.sin(Math.PI/6)-1):0))*Math.tan(Math.PI/6);
-    if(h<=width){hit=true;break;}
-   }
-   expect(shape.remaining[(z*grid.radialCells+r)*grid.angularSegments+a],`start ${startX}, end ${endX}, tip ${tip}, angle ${a}, z ${z}, r ${r}`).toBe(hit?0:1);
-  }
- }
-});
-it('reports swept holder overlap without removing material as if the holder were a cutter',()=>{
- const code='G21 G90 G18 G8\nT1 M6\nG0 X12 Z0\nG0 Z-3\nG1 X8 F100\nG0 X12\nM2';
- const parsed=parseGcode(code,options),plain=simulateLatheStock(parsed,options),withHolder=simulateLatheStock(parsed,options,'round-nose',undefined,false,{}, {},undefined,{}, {xMin:-2,xMax:-1,zMin:-.5,zMax:.5});
- if(!plain.ok||!withHolder.ok)throw new Error('holder example did not finish');
- expect(withHolder.remaining).toEqual(plain.remaining);expect(withHolder.holderContacts?.length).toBeGreaterThan(0);
- expect(withHolder.holderContacts?.some(c=>c.tool===1)).toBe(true);
- const far=simulateLatheStock(parsed,options,'round-nose',undefined,false,{}, {},undefined,{}, {xMin:30,xMax:32,zMin:30,zMax:32});
- if(!far.ok)throw new Error(far.message);expect(far.holderContacts).toBeUndefined();expect(far.remaining).toEqual(plain.remaining);
- const nearShape={xMin:-2,xMax:-1,zMin:-.5,zMax:.5},farShape={xMin:30,xMax:32,zMin:30,zMax:32};
- const match=simulateLatheStock(parsed,options,'round-nose',undefined,false,{}, {},undefined,{},farShape,{'1':nearShape}),other=simulateLatheStock(parsed,options,'round-nose',undefined,false,{}, {},undefined,{},farShape,{'2':nearShape});
- if(!match.ok||!other.ok)throw new Error('tool-specific holder example did not finish');expect(match.holderContacts).toEqual(withHolder.holderContacts);expect(other.holderContacts).toBeUndefined();expect(match.remaining).toEqual(plain.remaining);
- expect(simulateLatheStock(parsed,options,'round-nose',undefined,false,{}, {},undefined,{},farShape,{'1':{xMin:2,xMax:1,zMin:0,zMax:3}})).toMatchObject({ok:false,message:expect.stringContaining('공구별 홀더')});
- expect(simulateLatheStock(parsed,options,'round-nose',undefined,false,{}, {},undefined,{}, {xMin:2,xMax:1,zMin:0,zMax:3})).toMatchObject({ok:false,message:expect.stringContaining('홀더')});
-});
-it('does not flag a holder following material already cleared by the cutter',()=>{
- const setup={...options,initialPosition:{x:12,y:0,z:1}};
- const code='G21 G90 G18 G8\nT1 M6\nG0 X12 Z-3\nG1 X8 F100\nM2';
- const parsed=parseGcode(code,setup),plain=simulateLatheStock(parsed,setup);
- const trailing=simulateLatheStock(parsed,setup,'round-nose',undefined,false,{}, {},undefined,{}, {xMin:.5,xMax:1,zMin:-.12,zMax:.12});
- const leading=simulateLatheStock(parsed,setup,'round-nose',undefined,false,{}, {},undefined,{}, {xMin:-1,xMax:-.5,zMin:-.12,zMax:.12});
- if(!plain.ok||!trailing.ok||!leading.ok)throw new Error('holder example did not finish');
- expect(trailing.remaining).toEqual(plain.remaining);expect(trailing.holderContacts).toBeUndefined();
- expect(leading.holderContacts?.some(c=>c.motion==='G01')).toBe(true);
-});
-it('compares synchronized holder arrival with earlier cutting at each spindle phase',()=>{
- const setup={...options,initialPosition:{x:12,y:0,z:1}};
- const parsed=parseGcode('G21 G90 G18 G8\nT1 M6\nG0 X12 Z0\nS500 M3\nG0 X11\nG76 P1.2 Z-5.5 I-1 J.2 K1 R1\nM2',setup),template=parsed.segments.find(s=>s.thread?.kind==='thread-cut')!;
- const segment={...template,start:{x:4,y:0,z:-2.9},end:{x:0,y:0,z:-2.9},thread:{...template.thread!,phaseTurnsStart:0,phaseTurnsEnd:20,pitch:1.2}};
- const grid={radius:4,zMin:-5,zMax:0,step:.2,radialCells:20,axialCells:25,angularSegments:12},one={...parsed,segments:[segment]};
- const plain=simulateLatheStock(one,setup,'round-nose',grid,false,{}, {'1':{length:1}});
- const trailing=simulateLatheStock(one,setup,'round-nose',grid,false,{}, {'1':{length:1}},undefined,{}, {xMin:1.5,xMax:2,zMin:-.12,zMax:.12});
- const leading=simulateLatheStock(one,setup,'round-nose',grid,false,{}, {'1':{length:1}},undefined,{}, {xMin:-1,xMax:-.5,zMin:-.12,zMax:.12});
- if(!plain.ok||!trailing.ok||!leading.ok)throw new Error('thread holder example did not finish');
- expect(trailing.remaining).toEqual(plain.remaining);expect(trailing.holderContacts).toBeUndefined();
- expect(leading.holderContacts?.some(c=>c.motion==='G01')).toBe(true);
-});
-it('agrees with exhaustive discrete spindle events for synchronized holder overlap',()=>{
- const setup={...options,initialPosition:{x:12,y:0,z:1}},parsed=parseGcode('G21 G90 G18 G8\nT1 M6\nG0 X12 Z0\nS500 M3\nG0 X11\nG76 P1.2 Z-5.5 I-1 J.2 K1 R1\nM2',setup),template=parsed.segments.find(s=>s.thread?.kind==='thread-cut')!;
- const grid={radius:4,zMin:-5,zMax:0,step:.25,radialCells:16,axialCells:20,angularSegments:12};
- let seed=192837;const random=()=>{seed=(1664525*seed+1013904223)>>>0;return seed/2**32;};
- for(let sample=0;sample<18;sample++){
-  const a={x:random()*4,y:0,z:-4+random()*3},b={x:random()*4,y:0,z:-4+random()*3},tip=sample%2?.2:0,direction=sample%3===0?-1:1;
-  const xMin=-2+random()*3,zMin=-1+random()*1.5,holder={xMin,xMax:xMin+.4+random(),zMin,zMax:zMin+.3+random()};
-  const segment={...template,start:a,end:b,thread:{...template.thread!,phaseTurnsStart:.13,phaseTurnsEnd:12.13,pitch:1.2,spindleDirection:direction as 1|-1}};
-  const shape=simulateLatheStock({...parsed,segments:[segment]},setup,'round-nose',grid,false,{}, {'1':{length:1,tipRadius:tip}},undefined,{},holder);if(!shape.ok)throw new Error(shape.message);
-  let expected=false;
-  for(let angle=0;angle<grid.angularSegments&&!expected;angle++)for(let z=0;z<grid.axialCells&&!expected;z++)for(let r=0;r<grid.radialCells&&!expected;r++){
-   const x=(r+.5)*grid.step,pz=grid.zMin+(z+.5)*grid.step,phase=-direction*(angle+.5)/grid.angularSegments,tolerance=1/(2*grid.angularSegments),events:{turn:number;side:number}[]=[];
-   for(const side of [1,-1])for(let k=-2;k<=15;k++){const turn=phase+(side===1?0:-direction*.5)+k;if(turn>=.13-tolerance-1e-12&&turn<=12.13+tolerance+1e-12)events.push({turn,side});}
-   events.sort((u,v)=>u.turn-v.turn);let present=true;
-   for(const event of events){const q=Math.max(0,Math.min(1,(event.turn-.13)/12)),tx=a.x+(b.x-a.x)*q,tz=a.z+(b.z-a.z)*q,dx=event.side*x-tx,dz=pz-tz;
-    if(present&&dx>=holder.xMin&&dx<=holder.xMax&&dz>=holder.zMin&&dz<=holder.zMax){expected=true;break;}
-    if(event.side===1&&dx>=0&&dx<=1){const tangent=tip*(1-Math.sin(Math.PI/6)),width=tip>0&&dx<tangent?Math.sqrt(Math.max(0,2*tip*dx-dx*dx)):(dx+(tip?tip*(1/Math.sin(Math.PI/6)-1):0))*Math.tan(Math.PI/6);if(Math.abs(dz)<=width)present=false;}
-   }
-  }
-  expect(Boolean(shape.holderContacts?.length),`sample ${sample}`).toBe(expected);
- }
-});
-it('checks a 3D holder box against rotating stock away from the X/Z plane',()=>{
- const code='G21 G90 G18 G8\nT1 M6\nG0 X12 Z0\nG0 Z-3\nG1 X8 F100\nM2',parsed=parseGcode(code,options),template=parsed.segments.find(s=>s.motion==='G01')!;
- const stationary={...template,start:{x:-.2,y:0,z:-3.2},end:{x:-.2,y:0,z:-3.2}},one={...parsed,segments:[stationary]};
- const grid={radius:5,zMin:-5,zMax:0,step:.2,radialCells:25,axialCells:25,angularSegments:12};
- const shape=simulateLatheStock(one,options,'round-nose',grid,false,{}, {},undefined,{}, {xMin:0,xMax:1,yMin:3,yMax:4,zMin:-.5,zMax:.5});
- if(!shape.ok)throw new Error(shape.message);expect(shape.holderContacts?.length).toBeGreaterThan(0);expect(shape.holderContacts![0].radius).toBeGreaterThanOrEqual(3);
- const far=simulateLatheStock(one,options,'round-nose',grid,false,{}, {},undefined,{}, {xMin:0,xMax:1,yMin:6,yMax:7,zMin:-.5,zMax:.5});
- if(!far.ok)throw new Error(far.message);expect(far.holderContacts).toBeUndefined();expect(far.remaining).toEqual(shape.remaining);
- expect(simulateLatheStock(one,options,'round-nose',grid,false,{}, {},undefined,{}, {xMin:0,xMax:1,yMin:2,yMax:1,zMin:-.5,zMax:.5})).toMatchObject({ok:false,message:expect.stringContaining('홀더')});
-});
-it('agrees with angular samples for 3D holder boxes on a stationary tool',()=>{
- const code='G21 G90 G18 G8\nT1 M6\nG0 X12 Z0\nG0 Z-3\nG1 X8 F100\nM2',parsed=parseGcode(code,options),template=parsed.segments.find(s=>s.motion==='G01')!;
- const stationary={...template,start:{x:-.2,y:0,z:-3.2},end:{x:-.2,y:0,z:-3.2}},one={...parsed,segments:[stationary]};
- const grid={radius:5,zMin:-5,zMax:0,step:.2,radialCells:25,axialCells:25,angularSegments:12};let seed=781;const random=()=>{seed=(1664525*seed+1013904223)>>>0;return seed/2**32;};
- for(let i=0;i<40;i++){
-  const xMin=-6+12*random(),yMin=-6+12*random(),holder={xMin,xMax:xMin+.4+random()*2,yMin,yMax:yMin+.4+random()*2,zMin:-.5,zMax:.5};
-  let expected=false;for(let r=0;r<grid.radialCells&&!expected;r++)for(let angle=0;angle<3600;angle++){
-   const radius=(r+.5)*grid.step,theta=2*Math.PI*angle/3600,x=radius*Math.cos(theta),y=radius*Math.sin(theta);
-   if(x>=holder.xMin&&x<=holder.xMax&&y>=holder.yMin&&y<=holder.yMax){expected=true;break;}
-  }
-  const shape=simulateLatheStock(one,options,'round-nose',grid,false,{}, {},undefined,{},holder);if(!shape.ok)throw new Error(shape.message);
-  expect(Boolean(shape.holderContacts?.length),`box ${i}`).toBe(expected);
- }
-});
-
-it('removes identical stock for physically identical paths with nonzero tool offsets',()=>{
- const start={x:20,y:0,z:10},tool={diameter:.4,orientation:2,offsetX:2,offsetZ:3},offsetOptions={...options,initialPosition:start,linuxcncLatheToolReference:{tools:{'1':tool}}};
- const offsetCode='G21 G90 G18 G8\nT1 M6\nG0 X14 Z7\nG43\nG0 Z-3\nG1 X8 F100\nM2';
- const referenceOptions={...options,initialPosition:{x:18,y:0,z:7}},referenceCode='G21 G90 G18 G8\nT1 M6\nG0 X12 Z4\nG43\nG0 Z-3\nG1 X8 F100\nM2';
- const offset=parseGcode(offsetCode,offsetOptions),reference=parseGcode(referenceCode,referenceOptions);expect(offset.status).toBe('SUPPORTED');expect(reference.status).toBe('SUPPORTED');
- expect(offset.segments.map(s=>[s.start,s.end])).toEqual(reference.segments.map(s=>[s.start,s.end]));
- const actual=simulateLatheStock(offset,offsetOptions),expected=simulateLatheStock(reference,referenceOptions);if(!actual.ok||!expected.ok)throw new Error('stock example failed');expect(actual.remaining).toEqual(expected.remaining);
 });

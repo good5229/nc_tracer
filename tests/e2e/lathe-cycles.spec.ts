@@ -11,8 +11,3 @@ test('bounded G70 and G71.2 fixtures load with the explicit point reference',asy
   await expect(page.locator('.profile-info')).toContainText('점 공구 참조');
  }
 });
-test('renders the additional G70 start reposition in the point-tool reference',async({page})=>{
- await page.goto('/');await page.getByLabel('컨트롤러 프로파일').selectOption('linuxcnc');await page.getByLabel('이후 파일에 가상 점 공구 설정 사용').check();
- await page.locator('.topbar input[type=file]').setInputFiles({name:'g70-below.ngc',mimeType:'text/plain',buffer:readFileSync('tests/fixtures/g70_anchor_below.ngc')});
- await expect(page.locator('.status')).toHaveText('SUPPORTED');await expect(page.locator('.counter')).toContainText('/ 10');await expect(page.getByRole('region',{name:'해석 진단'})).toHaveCount(0);
-});
