@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import Viewer3D from './components/Viewer3D';
+import StockExample from './components/StockExample';
 import FileComparison from './components/FileComparison';
 import PathStats, { filterPathSegments, PATH_MOTIONS, type PathFilters } from './components/PathStats';
 import type { MotionSegment, ParseResult, ParserOptions } from './parser/gcode';
@@ -66,6 +67,7 @@ export default function App() {
     <div className="profile-info">컨트롤러: {appliedOptions.controllerProfile === 'linuxcnc' ? 'LinuxCNC 일부 명령' : '제한된 일반 프로파일'} · {appliedOptions.linuxcncPointToolReference ? '점 공구 참조: G54·공구 길이·반경 0, G90/G8, 고정 공구 교환' : '작업 좌표계 미확정 (G54–G59 미지원)'} · 좌표는 프로그램 지령값</div>
     <div className="metrics"><div><span>현재 위치 / mm</span><strong>X {fmt(active?.end.x)} <em>Y</em> {fmt(active?.end.y)} <em>Z</em> {fmt(active?.end.z)}</strong></div><div><span>선택된 블록 / 시작점 mm</span><strong>{active ? `${active.motion} · 행 ${active.sourceLine}${active.nBlock ? ` · N${active.nBlock}` : ''} / ${fmt(active.start.x)}, ${fmt(active.start.y)}, ${fmt(active.start.z)}` : '—'}</strong></div><div><span>해석 구간 / 경고 · 선택 블록 단위 / 좌표 모드</span><strong>{result?.segments.length ?? 0} <em>/</em> {result?.warnings.length ?? 0} · {active?.unit ?? '?'} / {active?.distanceMode ?? '?'}</strong></div></div>
    </section></div>
+   <StockExample />
    {result && <PathStats segments={segments} filters={filters} onFiltersChange={setFilters}/>}
    <FileComparison key={sourceGeneration} source={source} result={result} options={appliedOptions} />
    {(error || result?.warnings.length) ? <section className="diagnostics" aria-label="해석 진단"><h2>해석 진단 <span>{result?.warnings.length ?? 0}</span></h2>{error && <p>{error}</p>}{result?.warnings.slice(0,100).map(w=><button key={w.id} onClick={()=>selectLine(w.sourceLine)}><b>행 {w.sourceLine}</b> {w.message}</button>)}</section> : null}
