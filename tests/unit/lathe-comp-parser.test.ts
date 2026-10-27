@@ -109,3 +109,9 @@ it('stops the G76 demo at the actual short compensation entry under a positive T
  expect(result.status).toBe('PARTIAL');expect(result.warnings.at(-1)?.code).toBe('ENTRY_TOO_SHORT');
  expect(result.warnings.at(-1)?.sourceLine).toBe(source.split(/\r?\n/).findIndex(line=>line.trim().toLowerCase()==='g0z1')+1);
 });
+it('rejects G76 while cutter compensation is active',()=>{
+ const source='G18 G8 G21 G90\nT1 M6\nG0 X10 Z1\nS800 M3\nG41.1 D.4 L2\nG76 P1 Z-5 I-.5 J.1 K.3\nM2';
+ const table={...settings,linuxcncLatheToolReference:{tools:{'1':{diameter:.4,orientation:2,offsetX:0,offsetZ:0}}}};
+ const result=parseGcode(source,table);expect(result.status).toBe('PARTIAL');expect(result.warnings.at(-1)?.code).toBe('INVALID_THREAD_COMP');
+ expect(result.segments.some(s=>s.rawCode.includes('G76'))).toBe(false);
+});

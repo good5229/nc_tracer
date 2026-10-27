@@ -458,6 +458,7 @@ function parseCore(text: string, options: ParserOptions, originalSource = text):
     }
 
     if (thread) {
+      if(cutterCompActive){warn(sourceLine,'INVALID_THREAD_COMP','LinuxCNC에서는 공구 반경 보정이 켜진 상태로 G76을 실행할 수 없습니다.');Object.assign(state,blockStartState);status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;}
       const required = ['P','Z','I','J','K'];
       const words = ['P','Z','I','J','K','R','Q','H','E','L','D'];
       if (!latheRadiusMode || state.plane !== 'XZ' || state.unit === null || state.distanceMode === null || !renderablePosition(state.position) || !spindleRunning || mWords.length > 0 || required.some(letter=>!byLetter.has(letter)) || words.some(letter=>(byLetter.get(letter)?.length ?? 0)>1) || ['X','Y'].some(letter=>byLetter.has(letter))) {
