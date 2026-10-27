@@ -78,7 +78,15 @@ it('supports the bounded compensated G70 reference fixture',()=>{
  const expected=[['G00',10,3],['G00',10,1],['G00',4,.6],['G01',4,-5],['G01',7.8,-5],['G00',12,-5]] as const;
  expect(result.segments).toHaveLength(expected.length);
  result.segments.forEach((segment,i)=>{expect(segment.motion).toBe(expected[i][0]);expect(segment.end.x).toBeCloseTo(expected[i][1],4);expect(segment.end.z).toBeCloseTo(expected[i][2],4);});
- expect(parseGcode(source.replace('P1','P2'),table).warnings.at(-1)?.code).toBe('UNSUPPORTED_COMP_G70');
+});
+it.each([
+ ['g70_comp_multi',[['G00',10,3],['G00',10,1],['G00',4,.6],['G01',4,-5],['G00',10,1],['G01',9.247,.9843],['G00',4,.1394],['G01',4,-5],['G01',7.8,-5],['G00',12,-5]]],
+ ['g70_comp_allowance',[['G00',10,3],['G00',10,1],['G00',4.25,.6],['G01',4.25,-4.75],['G00',10,1],['G01',9.2186,1.0022],['G00',4,.1623],['G01',4,-5],['G01',7.8,-5],['G00',12,-5]]],
+] as const)('matches LinuxCNC for %s', (name,expected)=>{
+ const source=readFileSync(new URL(`../fixtures/${name}.ngc`,import.meta.url),'utf8');
+ const table={...settings,linuxcncLatheToolReference:{tools:{'1':{diameter:.4,orientation:2,offsetX:0,offsetZ:0}}}};
+ const result=parseGcode(source,table);expect(result.warnings).toEqual([]);expect(result.status).toBe('SUPPORTED');expect(result.segments).toHaveLength(expected.length);
+ result.segments.forEach((segment,i)=>{expect(segment.motion).toBe(expected[i][0]);expect(segment.end.x).toBeCloseTo(expected[i][1],4);expect(segment.end.z).toBeCloseTo(expected[i][2],4);if(i)expect(segment.start).toEqual(result.segments[i-1].end);});
 });
 it('stops the G76 demo at the actual short compensation entry under a positive T1 diameter',()=>{
  const source=readFileSync(new URL('../../demo/lathe-g76.ngc',import.meta.url),'utf8');

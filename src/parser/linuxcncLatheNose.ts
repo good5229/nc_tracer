@@ -26,7 +26,10 @@ export function linuxCncLatheNoseEntry(start:LatheNosePoint,end:LatheNosePoint,d
 
 export type LatheLine={end:LatheNosePoint;motion:'G00'|'G01';sourceLine:number};
 export type LatheInputArc={end:LatheNosePoint;center:LatheNosePoint;motion:'G02'|'G03';sourceLine:number};
-export type LatheInputMove=LatheLine|LatheInputArc;
+/** LinuxCNC G70 repositions without cutter compensation between passes while
+ * keeping the previous compensated move queued. */
+export type LatheBypass={end:LatheNosePoint;motion:'G00_BYPASS';sourceLine:number};
+export type LatheInputMove=LatheLine|LatheInputArc|LatheBypass;
 export type LatheCompMove={start:LatheNosePoint;end:LatheNosePoint;motion:'G00'|'G01'|'G02'|'G03';sourceLine:number;center?:LatheNosePoint};
 export type LatheCompLines={ok:true;moves:LatheCompMove[]}|{ok:false;code:string;sourceLine:number};
 export const latheNoseOriginOffset=(orientation:number,r:number):LatheNosePoint=>({x:orientation===2||orientation===6||orientation===1?-r:orientation===3||orientation===8||orientation===4?r:0,z:orientation===2||orientation===7||orientation===3?-r:orientation===1||orientation===5||orientation===4?r:0});
@@ -43,16 +46,39 @@ const times=(a:LatheNosePoint,k:number):LatheNosePoint=>({x:a.x*k,z:a.z*k});
 export function linuxCncLatheNoseLines(start:LatheNosePoint,lines:LatheInputMove[],diameter:number,side:'left'|'right',orientation:number):LatheCompLines {
  const error=(code:string,sourceLine:number):LatheCompLines=>({ok:false,code,sourceLine});
  if(!lines.length||lines.length>10000)return error('INVALID_LINE_COUNT',lines[0]?.sourceLine??0);
- if(lines.some(l=>!Number.isInteger(l.sourceLine)||l.sourceLine<1||!['G00','G01','G02','G03'].includes(l.motion)||![l.end.x,l.end.z].every(Number.isFinite)||('center' in l&&![l.center.x,l.center.z].every(Number.isFinite))))return error('INVALID_LINE',lines.find(l=>!Number.isInteger(l.sourceLine)||l.sourceLine<1)?.sourceLine??lines[0].sourceLine);
- if(lines[0].motion==='G02'||lines[0].motion==='G03')return error('UNSUPPORTED_FIRST_ARC',lines[0].sourceLine);
+ if(lines.some(l=>!Number.isInteger(l.sourceLine)||l.sourceLine<1||!['G00','G01','G02','G03','G00_BYPASS'].includes(l.motion)||![l.end.x,l.end.z].every(Number.isFinite)||('center' in l&&![l.center.x,l.center.z].every(Number.isFinite))))return error('INVALID_LINE',lines.find(l=>!Number.isInteger(l.sourceLine)||l.sourceLine<1)?.sourceLine??lines[0].sourceLine);
+ if(lines[0].motion==='G02'||lines[0].motion==='G03'||lines[0].motion==='G00_BYPASS')return error('UNSUPPORTED_FIRST_ARC',lines[0].sourceLine);
  const first=linuxCncLatheNoseEntry(start,lines[0].end,diameter,side,orientation);
  if(!first.ok)return error(first.code,lines[0].sourceLine);
  const radius=diameter/2, shift=latheNoseOriginOffset(orientation,radius),toolPoint=(point:LatheNosePoint)=>plus(point,shift);
  const moves:LatheCompMove[]=[{start:{...start},end:first.toolOrigin,motion:lines[0].motion,sourceLine:lines[0].sourceLine}];
  let programStart={...start},programPoint={...lines[0].end},center={...first.center};
- let previousArc=false,previousTangent:LatheNosePoint|undefined;
+ let previousArc=false,previousTangent:LatheNosePoint|undefined,bypassed=false,queuedOriginalStart:LatheNosePoint|undefined;
  for(let i=1;i<lines.length;i++){
   const line=lines[i],a=previousTangent??sub(programPoint,programStart),isArc=line.motion==='G02'||line.motion==='G03';
+  if(line.motion==='G00_BYPASS'){
+   const queued=moves.pop();
+   if(bypassed||!queued||queued.center||queued.motion==='G02'||queued.motion==='G03')return error('UNSUPPORTED_COMP_G70_QUEUE',line.sourceLine);
+   queuedOriginalStart={...queued.start};moves.push({start:queued.start,end:{...line.end},motion:'G00',sourceLine:line.sourceLine},{...queued,start:{...line.end}});
+   center={...line.end};bypassed=true;continue;
+  }
+  if(bypassed){
+   if(line.motion!=='G00'&&line.motion!=='G01')return error('UNSUPPORTED_COMP_G70_QUEUE',line.sourceLine);
+   const theta=Math.atan2(center.x-programPoint.x,center.z-programPoint.z);
+   let alpha=Math.atan2(line.end.x-programPoint.x,line.end.z-programPoint.z);
+   let adjustedTheta=theta;
+   if(side==='left' && adjustedTheta<alpha)adjustedTheta+=2*Math.PI;
+   if(side==='right' && alpha<adjustedTheta)alpha+=2*Math.PI;
+   const beta=(side==='left'?adjustedTheta-alpha:alpha-adjustedTheta)-Math.PI/2,gamma=side==='left'?Math.PI/2:-Math.PI/2;
+   if(!Number.isFinite(beta)||!(beta < -0.01 || beta > Math.PI+0.01))return error('UNSUPPORTED_COMP_G70_QUEUE',line.sourceLine);
+   const retreat=radius/Math.tan((beta+Math.PI)/2),mid={z:center.z+retreat*Math.cos(adjustedTheta+gamma),x:center.x+retreat*Math.sin(adjustedTheta+gamma)};
+   const pending=moves[moves.length-1],delta=sub(mid,sub(queuedOriginalStart!,shift)),direction=sub(programPoint,programStart);
+   if(![retreat,mid.x,mid.z].every(Number.isFinite)||delta.x*direction.x+delta.z*direction.z<0)return error('CONCAVE_GOUGING',line.sourceLine);
+   pending.end=toolPoint(mid);
+   const nextEnd={z:line.end.z+radius*Math.cos(alpha+gamma),x:line.end.x+radius*Math.sin(alpha+gamma)};
+   moves.push({start:pending.end,end:toolPoint(nextEnd),motion:line.motion,sourceLine:line.sourceLine});
+   center=nextEnd;programStart=programPoint;programPoint={...line.end};previousArc=false;previousTangent=undefined;bypassed=false;queuedOriginalStart=undefined;continue;
+  }
   let b:LatheNosePoint,arcEndTangent:LatheNosePoint|undefined,arcCenter:LatheNosePoint|undefined;
   if('center' in line){
    arcCenter=line.center;const atStart=sub(programPoint,line.center),atEnd=sub(line.end,line.center),r0=Math.hypot(atStart.x,atStart.z),r1=Math.hypot(atEnd.x,atEnd.z);
@@ -96,6 +122,7 @@ export function linuxCncLatheNoseLines(start:LatheNosePoint,lines:LatheInputMove
   }else moves.push({start:toolPoint(center),end:toolPoint(nextEnd),motion:line.motion,sourceLine:line.sourceLine});
   center=nextEnd;programStart=programPoint;programPoint={...line.end};previousArc=isArc;previousTangent=arcEndTangent;
  }
+ if(bypassed)return error('UNSUPPORTED_COMP_G70_QUEUE',lines.at(-1)!.sourceLine);
  return {ok:true,moves};
 }
 

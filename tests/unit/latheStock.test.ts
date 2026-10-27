@@ -33,3 +33,9 @@ it('uses the compensated G70 path in the example stock calculation',()=>{
  const outcome=simulateLatheStock(parsed,options);
  expect(outcome.ok).toBe(true);if(outcome.ok)expect(outcome.removed).toBeGreaterThan(0);
 });
+it('detects example-stock contact on the LinuxCNC multipass return',()=>{
+ const source=readFileSync(new URL('../fixtures/g70_comp_multi.ngc',import.meta.url),'utf8');
+ const parsed=parseGcode(source,options);expect(parsed.status).toBe('SUPPORTED');
+ const outcome=simulateLatheStock(parsed,options);expect(outcome.ok).toBe(false);
+ if(!outcome.ok){expect(outcome.message).toContain('급속');expect(outcome.sourceLine).toBe(source.split(/\r?\n/).findIndex(line=>line.startsWith('G70 '))+1);}
+});
