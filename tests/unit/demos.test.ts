@@ -23,6 +23,8 @@ describe('LinuxCNC demo support boundaries', () => {
     expect(result.status).toBe('SUPPORTED');
     expect(result.segments).toHaveLength(1);
     expect(result.segments[0].end).toEqual({x:10,y:0,z:0});
-    expect(parseGcode('G64 P0.1', {controllerProfile:'linuxcnc'}).status).toBe('UNSUPPORTED');
+    expect(parseGcode('G64 P0.1 Q0.05\nG4 P1', {controllerProfile:'linuxcnc'}).status).toBe('SUPPORTED');
+    expect(parseGcode('G64 Q0.1', {controllerProfile:'linuxcnc'}).status).toBe('INVALID');
+    expect(parseGcode('G4 P1 X1', {controllerProfile:'linuxcnc'}).status).toBe('INVALID');
   });
 });

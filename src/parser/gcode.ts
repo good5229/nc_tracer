@@ -211,13 +211,17 @@ export function parseGcode(text: string, options: ParserOptions = {}): ParseResu
     }
     const linuxcnc = options.controllerProfile === 'linuxcnc';
     const knownLetters = new Set(['N', 'G', 'M', 'X', 'Y', 'Z', 'F', 'S', 'T', 'I', 'J', 'K', 'R']);
+    const pathControl = linuxcnc && gWords.includes(64);
+    const dwell = linuxcnc && gWords.includes(4);
+    if (pathControl || dwell) knownLetters.add('P');
+    if (pathControl) knownLetters.add('Q');
     const unsupportedLetter = tokens.find((t) => !knownLetters.has(t.letter));
     if (unsupportedLetter || byLetter.has('M') && mWords.some((m) => !(linuxcnc ? [2, 3, 4, 5, 30] : [2, 30]).includes(m))) {
       warn(sourceLine, 'UNSUPPORTED_BLOCK', 'Unsupported word or machine command; interpretation stopped here');
       status = segments.length ? 'PARTIAL' : 'UNSUPPORTED'; stopped = true; break;
     }
 
-    const supportedG = new Set([0, 1, 2, 3, 17, 18, 19, 20, 21, 90, 91, ...(linuxcnc ? [61, 61.1, 64] : [])]);
+    const supportedG = new Set([0, 1, 2, 3, 17, 18, 19, 20, 21, 90, 91, ...(linuxcnc ? [4, 61, 61.1, 64] : [])]);
     const badG = gWords.find((g) => !supportedG.has(g));
     if (badG !== undefined) {
       warn(sourceLine, 'UNSUPPORTED_GCODE', `G${badG} is outside the supported profile; interpretation stopped here`);
@@ -228,6 +232,9 @@ export function parseGcode(text: string, options: ParserOptions = {}): ParseResu
     ].some((group) => group.filter((g) => gWords.includes(g)).length > 1);
     if (conflicts) {
       warn(sourceLine, 'CONFLICTING_MODAL', 'Conflicting modal groups in one block'); status = 'INVALID'; stopped = true; break;
+    }
+    if ((pathControl || dwell) && (['P', 'Q'].some(letter => (byLetter.get(letter)?.length ?? 0) > 1 || (byLetter.get(letter)?.[0] ?? 0) < 0) || (dwell && (!byLetter.has('P') || pathControl || ['X','Y','Z','I','J','K','R'].some(letter => byLetter.has(letter)) || gWords.some(g => [0,1,2,3].includes(g)))) || (pathControl && ((byLetter.has('Q') && !byLetter.has('P')) || ((byLetter.has('P') || byLetter.has('Q')) && ['X','Y','Z','I','J','K','R'].some(letter => byLetter.has(letter))))))) {
+      warn(sourceLine, 'INVALID_PATH_CONTROL', 'Invalid path control or dwell parameters'); status = 'INVALID'; stopped = true; break;
     }
 
     const blockStartState: ModalState = { ...state, position: { ...state.position } };
