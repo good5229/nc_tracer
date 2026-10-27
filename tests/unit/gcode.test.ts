@@ -81,14 +81,107 @@ describe('parseGcode', () => {
 
   it('stops at unsupported commands and preserves only earlier verified segments', () => {
     const result = parseGcode('G21 G90 G00 X0 Y0 Z0\nG01 X1 Y1 Z1\nG02 X2 Y2 I1 J0\nG01 X3 Y3 Z3', { initialPosition: origin });
+    // Arc words without an explicit plane are outside the verified profile.
     expect(result.status).toBe('PARTIAL');
     expect(result.segments).toHaveLength(1);
     expect(result.warnings[0].sourceLine).toBe(3);
     expect(result.finalState.position).toEqual({ x: null, y: null, z: null });
   });
 
+  it('tessellates a G17 quarter circle with independent midpoint and length expectations', () => {
+    const result = parseGcode('G21 G90 G17 G03 X0 Y1 I-1 J0', { initialPosition: { x: 1, y: 0, z: 0 } });
+    const arc = result.segments[0];
+    expect(result.status).toBe('SUPPORTED');
+    expect(result.segments).toHaveLength(1);
+    expect(arc).toMatchObject({ motion: 'G03', start: { x: 1, y: 0, z: 0 }, end: { x: 0, y: 1, z: 0 }, rawCode: 'G21 G90 G17 G03 X0 Y1 I-1 J0' });
+    const middle = arc.vertices![Math.floor((arc.vertices!.length - 1) / 2)];
+    expect(middle.x).toBeCloseTo(Math.SQRT1_2, 5);
+    expect(middle.y).toBeCloseTo(Math.SQRT1_2, 5);
+    const polylineLength = arc.vertices!.slice(1).reduce((length, point, index) => {
+      const previous = arc.vertices![index];
+      return length + Math.hypot(point.x! - previous.x!, point.y! - previous.y!, point.z! - previous.z!);
+    }, 0);
+    expect(polylineLength).toBeCloseTo(Math.PI / 2, 3);
+
+    const clockwise = parseGcode('G21 G90 G17 G02 X-1 I-1 J0', { initialPosition: { x: 1, y: 0, z: 0 } }).segments[0];
+    const cwMid = clockwise.vertices![Math.floor((clockwise.vertices!.length - 1) / 2)];
+    expect(cwMid.x).toBeCloseTo(0, 5);
+    expect(cwMid.y).toBeCloseTo(-1, 5);
+  });
+
+  it('uses right-handed G18/G19 plane coordinates for direction', () => {
+    const g18 = parseGcode('G21 G90 G18 G03 X-1 I-1 K0', { initialPosition: { x: 1, y: 0, z: 0 } }).segments[0];
+    const g19 = parseGcode('G21 G90 G19 G03 Y-1 J-1 K0', { initialPosition: { x: 0, y: 1, z: 0 } }).segments[0];
+    const mid18 = g18.vertices![Math.floor((g18.vertices!.length - 1) / 2)];
+    const mid19 = g19.vertices![Math.floor((g19.vertices!.length - 1) / 2)];
+    expect(mid18.z).toBeCloseTo(-1, 5);
+    expect(mid19.z).toBeCloseTo(1, 5);
+  });
+
+  it('supports full circles from IJK, but rejects full circles from R', () => {
+    const full = parseGcode('G21 G90 G17 G03 I-1 J0', { initialPosition: { x: 1, y: 0, z: 0 } });
+    expect(full.status).toBe('SUPPORTED');
+    expect(full.segments).toHaveLength(1);
+    expect(full.segments[0].vertices).toHaveLength(73);
+    expect(full.segments[0].vertices![36].x).toBeCloseTo(-1, 5);
+    expect(full.segments[0].vertices![36].y).toBeCloseTo(0, 5);
+    const radius = parseGcode('G21 G90 G17 G03 R1', { initialPosition: { x: 1, y: 0, z: 0 } });
+    expect(radius.status).toBe('INVALID');
+    expect(radius.warnings[0].code).toBe('INVALID_ARC_GEOMETRY');
+  });
+
+  it('supports signed R minor/major arcs and keeps modal arc motion', () => {
+    const minor = parseGcode('G21 G90 G17 G03 X0 Y1 R1\nX-1 Y0 R1', { initialPosition: { x: 1, y: 0, z: 0 } });
+    const major = parseGcode('G21 G90 G17 G03 X0 Y1 R-1', { initialPosition: { x: 1, y: 0, z: 0 } });
+    expect(minor.segments).toHaveLength(2);
+    expect(minor.segments[1].motion).toBe('G03');
+    const minorMid = minor.segments[0].vertices![Math.floor((minor.segments[0].vertices!.length - 1) / 2)];
+    const majorMid = major.segments[0].vertices![Math.floor((major.segments[0].vertices!.length - 1) / 2)];
+    expect(minorMid.x).toBeCloseTo(Math.SQRT1_2, 5);
+    expect(majorMid.x).toBeCloseTo(1 + Math.SQRT1_2, 5);
+    expect(majorMid.y).toBeCloseTo(1 + Math.SQRT1_2, 5);
+  });
+
+  it('keeps large-radius chord sagitta within 0.01 mm and stops when the vertex cap would be exceeded', () => {
+    const large = parseGcode('G21 G90 G17 G03 X0 Y1000 I-1000 J0', { initialPosition: { x: 1000, y: 0, z: 0 } }).segments[0];
+    let maxSagitta = 0;
+    for (let i = 1; i < large.vertices!.length; i += 1) {
+      const a = large.vertices![i - 1], b = large.vertices![i];
+      const midX = (a.x! + b.x!) / 2, midY = (a.y! + b.y!) / 2;
+      maxSagitta = Math.max(maxSagitta, 1000 - Math.hypot(midX, midY));
+    }
+    expect(maxSagitta).toBeLessThanOrEqual(0.01 + 1e-9);
+
+    const enormous = parseGcode('G21 G90 G17 G03 X0 Y1000000000000 I-1000000000000 J0', {
+      initialPosition: { x: 1_000_000_000_000, y: 0, z: 0 },
+    });
+    expect(enormous.status).toBe('INVALID');
+    expect(enormous.segments).toHaveLength(0);
+    expect(enormous.warnings[0].code).toBe('ARC_TESSELLATION_LIMIT');
+  });
+
+  it('rejects missing plane, center mismatch, mixed R/IJK, and out-of-plane center words', () => {
+    const inputs = [
+      'G21 G90 G03 X0 Y1 I-1 J0',
+      'G21 G90 G17 G03 X0 Y1 I-1 J-1',
+      'G21 G90 G17 G03 X0 Y1 R1 I-1',
+      'G21 G90 G17 G03 X0 Y1 I-1 J0 K2',
+    ];
+    for (const input of inputs) expect(parseGcode(input, { initialPosition: { x: 1, y: 0, z: 0 } }).status).not.toBe('SUPPORTED');
+  });
+
+  it('requires known arc start and keeps arc subdivision within one source motion', () => {
+    const unknownStart = parseGcode('G21 G90 G17 G03 X0 Y1 I-1 J0');
+    expect(unknownStart.status).toBe('UNSUPPORTED');
+    expect(unknownStart.segments).toHaveLength(0);
+    const result = parseGcode('N4 G21 G90 G17 G03 X0 Y1 I-1 J0', { initialPosition: { x: 1, y: 0, z: 0 } });
+    expect(result.segments).toHaveLength(1);
+    expect(result.segments[0]).toMatchObject({ sourceLine: 1, nBlock: '4', rawCode: 'N4 G21 G90 G17 G03 X0 Y1 I-1 J0', unit: 'mm', distanceMode: 'absolute', plane: 'XY' });
+    expect(result.segments[0].vertices!.length).toBeGreaterThan(2);
+  });
+
   it('rejects malformed comments, duplicate axes, and conflicting modal words', () => {
-    for (const input of ['G21 (unfinished', 'G01 X1 X2', 'G20 G21']) {
+    for (const input of ['G21 (unfinished', 'G01 X1 X2', 'G20 G21', 'G02 G03 G17']) {
       expect(parseGcode(input).status).toBe('INVALID');
     }
   });

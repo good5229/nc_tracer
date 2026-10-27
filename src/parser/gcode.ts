@@ -1,6 +1,6 @@
 export type ValidationStatus = 'SUPPORTED' | 'PARTIAL' | 'UNSUPPORTED' | 'INVALID';
 export type Vector3 = { x: number | null; y: number | null; z: number | null };
-export type Motion = 'G00' | 'G01';
+export type Motion = 'G00' | 'G01' | 'G02' | 'G03';
 export type ModalState = {
   unit: 'mm' | 'inch' | null;
   distanceMode: 'absolute' | 'incremental' | null;
@@ -25,6 +25,11 @@ export type MotionSegment = {
   feed?: number;
   spindle?: number;
   tool?: number;
+  unit: ModalState['unit'];
+  distanceMode: ModalState['distanceMode'];
+  plane: ModalState['plane'];
+  /** Ordered tessellation points, including start and end, for a source arc move. */
+  vertices?: Vector3[];
 };
 export type ParseResult = {
   status: ValidationStatus;
@@ -36,8 +41,58 @@ export type ParserOptions = {
   initialPosition?: Vector3;
   initialUnit?: 'mm' | 'inch';
   initialDistanceMode?: 'absolute' | 'incremental';
-  initialMotionMode?: Motion;
+  initialMotionMode?: 'G00' | 'G01';
 };
+
+type PlaneAxes = { u: 'x' | 'y' | 'z'; v: 'x' | 'y' | 'z'; cu: 'I' | 'J' | 'K'; cv: 'I' | 'J' | 'K'; out: 'x' | 'y' | 'z' };
+// Right-handed plane coordinates viewed from each plane's positive normal.
+const planeAxes: Record<NonNullable<ModalState['plane']>, PlaneAxes> = {
+  XY: { u: 'x', v: 'y', cu: 'I', cv: 'J', out: 'z' },
+  XZ: { u: 'z', v: 'x', cu: 'K', cv: 'I', out: 'y' },
+  YZ: { u: 'y', v: 'z', cu: 'J', cv: 'K', out: 'x' },
+};
+const TAU = Math.PI * 2;
+const ARC_MAX_SAGITTA_MM = 0.01;
+const ARC_MAX_SEGMENTS = 100_000;
+const normalizeAngle = (angle: number) => ((angle % TAU) + TAU) % TAU;
+
+function solveArc(start: Vector3, end: Vector3, plane: NonNullable<ModalState['plane']>, clockwise: boolean,
+  byLetter: Map<string, number[]>, scale: number) {
+  const axes = planeAxes[plane];
+  const su = start[axes.u]!, sv = start[axes.v]!, eu = end[axes.u]!, ev = end[axes.v]!;
+  const hasR = byLetter.has('R');
+  const hasOffsets = byLetter.has(axes.cu) || byLetter.has(axes.cv);
+  const anyCenterWord = ['I', 'J', 'K'].some((word) => byLetter.has(word));
+  if (hasR === hasOffsets || (anyCenterWord && ['I', 'J', 'K'].some((word) => byLetter.has(word) && word !== axes.cu && word !== axes.cv))) return null;
+  if (hasR) {
+    const signedR = byLetter.get('R')![0] * scale;
+    const radius = Math.abs(signedR), du = eu - su, dv = ev - sv, chord = Math.hypot(du, dv);
+    const tol = Math.max(1e-8, radius * 1e-8);
+    // Radius arcs with identical endpoints or exactly 180 degrees are ambiguous.
+    if (!(radius > 0) || !(chord > tol) || chord > 2 * radius + tol || Math.abs(chord - 2 * radius) <= tol) return null;
+    const h = Math.sqrt(Math.max(0, radius * radius - chord * chord / 4));
+    const midU = (su + eu) / 2, midV = (sv + ev) / 2;
+    const centers = [
+      { u: midU - dv / chord * h, v: midV + du / chord * h },
+      { u: midU + dv / chord * h, v: midV - du / chord * h },
+    ];
+    const candidates = centers.map((center) => {
+      const a0 = Math.atan2(sv - center.v, su - center.u), a1 = Math.atan2(ev - center.v, eu - center.u);
+      return { ...center, sweep: clockwise ? -normalizeAngle(a0 - a1) : normalizeAngle(a1 - a0) };
+    });
+    const wanted = candidates.filter((candidate) => signedR < 0 ? Math.abs(candidate.sweep) > Math.PI : Math.abs(candidate.sweep) < Math.PI);
+    if (wanted.length !== 1) return null;
+    return { centerU: wanted[0].u, centerV: wanted[0].v, sweep: wanted[0].sweep, radius, axes };
+  }
+  if (!byLetter.has(axes.cu) && !byLetter.has(axes.cv)) return null;
+  const centerU = su + (byLetter.get(axes.cu)?.[0] ?? 0) * scale;
+  const centerV = sv + (byLetter.get(axes.cv)?.[0] ?? 0) * scale;
+  const r0 = Math.hypot(su - centerU, sv - centerV), r1 = Math.hypot(eu - centerU, ev - centerV);
+  if (!(r0 > 0) || Math.abs(r0 - r1) > Math.max(1e-6, r0 * 1e-6)) return null;
+  const a0 = Math.atan2(sv - centerV, su - centerU), a1 = Math.atan2(ev - centerV, eu - centerU);
+  const fullCircle = su === eu && sv === ev;
+  return { centerU, centerV, radius: r0, sweep: fullCircle ? (clockwise ? -TAU : TAU) : clockwise ? -normalizeAngle(a0 - a1) : normalizeAngle(a1 - a0), axes };
+}
 
 const unknownPosition = (): Vector3 => ({ x: null, y: null, z: null });
 const finitePosition = (p: Vector3) => [p.x, p.y, p.z].every((v) => v !== null && Number.isFinite(v));
@@ -131,21 +186,21 @@ export function parseGcode(text: string, options: ParserOptions = {}): ParseResu
     if (gWords.some((g, i) => gWords.indexOf(g) !== i) || mWords.length > 1) {
       warn(sourceLine, 'DUPLICATE_MODAL_WORD', 'Duplicate G or M word'); status = 'INVALID'; stopped = true; break;
     }
-    const knownLetters = new Set(['N', 'G', 'M', 'X', 'Y', 'Z', 'F', 'S', 'T']);
+    const knownLetters = new Set(['N', 'G', 'M', 'X', 'Y', 'Z', 'F', 'S', 'T', 'I', 'J', 'K', 'R']);
     const unsupportedLetter = tokens.find((t) => !knownLetters.has(t.letter));
     if (unsupportedLetter || byLetter.has('M') && mWords.some((m) => ![2, 30].includes(m))) {
       warn(sourceLine, 'UNSUPPORTED_BLOCK', 'Unsupported word or machine command; interpretation stopped here');
       status = segments.length ? 'PARTIAL' : 'UNSUPPORTED'; stopped = true; break;
     }
 
-    const supportedG = new Set([0, 1, 17, 18, 19, 20, 21, 90, 91]);
+    const supportedG = new Set([0, 1, 2, 3, 17, 18, 19, 20, 21, 90, 91]);
     const badG = gWords.find((g) => !supportedG.has(g));
     if (badG !== undefined) {
       warn(sourceLine, 'UNSUPPORTED_GCODE', `G${badG} is outside the supported profile; interpretation stopped here`);
       status = segments.length ? 'PARTIAL' : 'UNSUPPORTED'; stopped = true; break;
     }
     const conflicts = [
-      [0, 1], [90, 91], [20, 21], [17, 18, 19],
+      [0, 1, 2, 3], [90, 91], [20, 21], [17, 18, 19],
     ].some((group) => group.filter((g) => gWords.includes(g)).length > 1);
     if (conflicts) {
       warn(sourceLine, 'CONFLICTING_MODAL', 'Conflicting modal groups in one block'); status = 'INVALID'; stopped = true; break;
@@ -159,6 +214,8 @@ export function parseGcode(text: string, options: ParserOptions = {}): ParseResu
     if (gWords.includes(91)) state.distanceMode = 'incremental';
     if (gWords.includes(0)) state.motionMode = 'G00';
     if (gWords.includes(1)) state.motionMode = 'G01';
+    if (gWords.includes(2)) state.motionMode = 'G02';
+    if (gWords.includes(3)) state.motionMode = 'G03';
     if (gWords.includes(17)) state.plane = 'XY';
     if (gWords.includes(18)) state.plane = 'XZ';
     if (gWords.includes(19)) state.plane = 'YZ';
@@ -184,12 +241,13 @@ export function parseGcode(text: string, options: ParserOptions = {}): ParseResu
     const axes = ['X', 'Y', 'Z'] as const;
     const hasAxis = axes.some((axis) => byLetter.has(axis));
     const hasArcParams = ['I', 'J', 'K', 'R'].some((letter) => byLetter.has(letter));
-    if (hasArcParams || (hasAxis && state.motionMode === null)) {
-      warn(sourceLine, hasArcParams ? 'UNSUPPORTED_ARC' : 'UNKNOWN_MOTION', hasArcParams ? 'Arc parameters are unsupported' : 'Motion mode is unknown; position interpretation stopped');
+    const arcMotion = state.motionMode === 'G02' || state.motionMode === 'G03';
+    if (hasArcParams && !arcMotion || arcMotion && (hasAxis || hasArcParams) && state.plane === null) {
+      warn(sourceLine, hasArcParams && !arcMotion ? 'UNSUPPORTED_ARC' : 'UNKNOWN_ARC_PLANE', hasArcParams && !arcMotion ? 'Arc parameters require G02/G03' : 'G17/G18/G19 must be explicitly selected before an arc');
       status = segments.length ? 'PARTIAL' : 'UNSUPPORTED'; stopped = true; break;
     }
 
-    if (hasAxis) {
+    if (hasAxis || arcMotion && hasArcParams) {
       if (state.unit === null || state.distanceMode === null || state.motionMode === null) {
         warn(sourceLine, 'UNKNOWN_MODAL_STATE', 'Unit, distance mode, or motion mode is unknown; position cannot be interpreted');
         status = segments.length ? 'PARTIAL' : 'UNSUPPORTED';
@@ -197,6 +255,10 @@ export function parseGcode(text: string, options: ParserOptions = {}): ParseResu
         state.position = unknownPosition();
         stopped = true;
         break;
+      }
+      if (arcMotion && !renderablePosition(state.position)) {
+        warn(sourceLine, 'UNKNOWN_ARC_START', 'Arc requires a fully known starting position');
+        status = segments.length ? 'PARTIAL' : 'UNSUPPORTED'; stopped = true; state.position = unknownPosition(); break;
       }
       const start = { ...state.position };
       const end = { ...state.position };
@@ -216,10 +278,43 @@ export function parseGcode(text: string, options: ParserOptions = {}): ParseResu
         Object.assign(state, blockStartState);
         status = 'INVALID'; stopped = true; break;
       }
+      if (arcMotion) {
+        const arc = solveArc(start, end, state.plane!, state.motionMode === 'G02', byLetter, scale);
+        if (!arc) {
+          warn(sourceLine, 'INVALID_ARC_GEOMETRY', 'Arc center/radius is ambiguous or inconsistent with its endpoints');
+          Object.assign(state, blockStartState); status = 'INVALID'; stopped = true; break;
+        }
+        const sagittaRatio = Math.min(1, ARC_MAX_SAGITTA_MM / arc.radius);
+        const sagittaStep = 2 * Math.asin(Math.sqrt(sagittaRatio * (2 - sagittaRatio)) / 2);
+        const maxStep = Math.min(Math.PI / 36, sagittaStep);
+        const count = Math.max(1, Math.ceil(Math.abs(arc.sweep) / maxStep));
+        if (!Number.isFinite(count) || count > ARC_MAX_SEGMENTS) {
+          warn(sourceLine, 'ARC_TESSELLATION_LIMIT', `Arc requires more than ${ARC_MAX_SEGMENTS} vertices to stay within ${ARC_MAX_SAGITTA_MM} mm sagitta tolerance`);
+          Object.assign(state, blockStartState); status = 'INVALID'; stopped = true; break;
+        }
+        const vertices: Vector3[] = [];
+        for (let i = 0; i <= count; i += 1) {
+          const fraction = i / count, angle = Math.atan2(start[arc.axes.v]! - arc.centerV, start[arc.axes.u]! - arc.centerU) + arc.sweep * fraction;
+          const point = { ...start };
+          point[arc.axes.u] = i === count ? end[arc.axes.u] : arc.centerU + arc.radius * Math.cos(angle);
+          point[arc.axes.v] = i === count ? end[arc.axes.v] : arc.centerV + arc.radius * Math.sin(angle);
+          point[arc.axes.out] = start[arc.axes.out]! + (end[arc.axes.out]! - start[arc.axes.out]!) * fraction;
+          if (!renderablePosition(point)) {
+            warn(sourceLine, 'CALCULATION_OVERFLOW', 'Arc tessellation exceeded the supported Float32 range');
+            Object.assign(state, blockStartState); status = 'INVALID'; stopped = true; break;
+          }
+          vertices.push(point);
+        }
+        if (stopped) break;
+        state.position = end;
+        segments.push({ id: `line-${sourceLine}-segment-0`, sourceLine, ...(byLetter.has('N') ? { nBlock: String(byLetter.get('N')![0]) } : {}), rawCode, motion: state.motionMode, start, end, vertices, unit: state.unit, distanceMode: state.distanceMode, plane: state.plane, status: 'SUPPORTED', warningIds: [], ...(state.feed !== null ? { feed: state.feed } : {}), ...(state.spindle !== null ? { spindle: state.spindle } : {}), ...(state.tool !== null ? { tool: state.tool } : {}) });
+        if (mWords.includes(2) || mWords.includes(30)) { programEndIndex = index; stopped = true; }
+        continue;
+      }
       state.position = end;
       if (renderablePosition(start) && renderablePosition(end)) {
         if (start.x !== end.x || start.y !== end.y || start.z !== end.z) {
-          segments.push({ id: `line-${sourceLine}-segment-0`, sourceLine, ...(byLetter.has('N') ? { nBlock: String(byLetter.get('N')![0]) } : {}), rawCode, motion: state.motionMode, start, end, status: 'SUPPORTED', warningIds: [], ...(state.feed !== null ? { feed: state.feed } : {}), ...(state.spindle !== null ? { spindle: state.spindle } : {}), ...(state.tool !== null ? { tool: state.tool } : {}) });
+          segments.push({ id: `line-${sourceLine}-segment-0`, sourceLine, ...(byLetter.has('N') ? { nBlock: String(byLetter.get('N')![0]) } : {}), rawCode, motion: state.motionMode, start, end, unit: state.unit, distanceMode: state.distanceMode, plane: state.plane, status: 'SUPPORTED', warningIds: [], ...(state.feed !== null ? { feed: state.feed } : {}), ...(state.spindle !== null ? { spindle: state.spindle } : {}), ...(state.tool !== null ? { tool: state.tool } : {}) });
         }
       } else {
         warn(sourceLine, 'POSITION_UNKNOWN', 'Position is not fully known; no line segment was emitted');
