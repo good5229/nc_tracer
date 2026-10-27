@@ -114,7 +114,18 @@ it('calculates the complete original G76 point-table path with separately assume
  const parsed=parseGcode(source,pointOptions);expect(parsed.status).toBe('SUPPORTED');expect(parsed.segments.some(s=>s.thread?.kind==='thread-cut')).toBe(true);
  const tools=Object.fromEntries([1,4,9].map(n=>[String(n),{diameter:.4,orientation:2,offsetX:0,offsetZ:0}]));
  const grid={radius:3.175,zMin:-16.6,zMax:0,step:.2,radialCells:16,axialCells:83,angularSegments:24};
- const shape=simulateLatheStock(parsed,{...pointOptions,linuxcncLatheToolReference:{tools}},'round-nose',grid);
+ const shape=simulateLatheStock(parsed,{...pointOptions,linuxcncLatheToolReference:{tools}},'round-nose',grid,false,{'9':{width:1,length:2}});
  if(!shape.ok)throw new Error(shape.message);expect(shape.angularCells).toBe(24);expect(shape.removed).toBeGreaterThan(0);expect(shape.remaining.some(v=>v===1)).toBe(true);
  let mixedRings=0;for(let i=0;i<shape.remaining.length;i+=24){const ring=shape.remaining.slice(i,i+24);if(ring.some(v=>v===0)&&ring.some(v=>v===1))mixedRings++;}expect(mixedRings).toBeGreaterThan(0);
+});
+it('sweeps a distinct parting blade across its stated width, including rapid collision checks',()=>{
+ const setup={...options,linuxcncLatheToolReference:{tools:{'9':{diameter:.4,orientation:2,offsetX:0,offsetZ:0}}}};
+ const program='G21 G90 G18 G8\nT9 M6\nG0 X12 Z0\nG0 Z-3\nG1 X0 F100\nG0 X12\nM2';
+ const parsed=parseGcode(program,setup);expect(parsed.status).toBe('SUPPORTED');
+ const shape=simulateLatheStock(parsed,setup,'round-nose',undefined,false,{'9':{width:1,length:2}});
+ if(!shape.ok)throw new Error(shape.message);const cell=(r:number,z:number)=>shape.remaining[z*50+r];
+ expect(cell(5,15)).toBe(0);expect(cell(5,11)).toBe(1);expect(cell(40,15)).toBe(0);
+ const unsafe=parseGcode(program.replace('G0 Z-3','G0 X8 Z-3'),setup);
+ expect(simulateLatheStock(unsafe,setup,'round-nose',undefined,false,{'9':{width:1,length:2}})).toMatchObject({ok:false,message:expect.stringContaining('급속')});
+ expect(simulateLatheStock(parsed,setup,'round-nose',undefined,false,{'9':{width:0,length:2}})).toMatchObject({ok:false,message:expect.stringContaining('폭')});
 });
