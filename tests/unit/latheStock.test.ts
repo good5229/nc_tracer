@@ -254,6 +254,10 @@ it('reports swept holder overlap without removing material as if the holder were
  expect(withHolder.holderContacts?.some(c=>c.tool===1)).toBe(true);
  const far=simulateLatheStock(parsed,options,'round-nose',undefined,false,{}, {},undefined,{}, {xMin:30,xMax:32,zMin:30,zMax:32});
  if(!far.ok)throw new Error(far.message);expect(far.holderContacts).toBeUndefined();expect(far.remaining).toEqual(plain.remaining);
+ const nearShape={xMin:-2,xMax:-1,zMin:-.5,zMax:.5},farShape={xMin:30,xMax:32,zMin:30,zMax:32};
+ const match=simulateLatheStock(parsed,options,'round-nose',undefined,false,{}, {},undefined,{},farShape,{'1':nearShape}),other=simulateLatheStock(parsed,options,'round-nose',undefined,false,{}, {},undefined,{},farShape,{'2':nearShape});
+ if(!match.ok||!other.ok)throw new Error('tool-specific holder example did not finish');expect(match.holderContacts).toEqual(withHolder.holderContacts);expect(other.holderContacts).toBeUndefined();expect(match.remaining).toEqual(plain.remaining);
+ expect(simulateLatheStock(parsed,options,'round-nose',undefined,false,{}, {},undefined,{},farShape,{'1':{xMin:2,xMax:1,zMin:0,zMax:3}})).toMatchObject({ok:false,message:expect.stringContaining('공구별 홀더')});
  expect(simulateLatheStock(parsed,options,'round-nose',undefined,false,{}, {},undefined,{}, {xMin:2,xMax:1,zMin:0,zMax:3})).toMatchObject({ok:false,message:expect.stringContaining('홀더')});
 });
 it('does not flag a holder following material already cleared by the cutter',()=>{

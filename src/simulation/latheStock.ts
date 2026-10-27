@@ -21,6 +21,7 @@ export type LatheInsertModel='round-nose'|'example-insert';
 export type LatheInsertShape={xExtent:number;zNear:number;zFar:number};
 /** Example rectangular holder section relative to the tool reference. */
 export type LatheHolderShape={xMin:number;xMax:number;zMin:number;zMax:number};
+const validHolder=(s:LatheHolderShape)=>[s.xMin,s.xMax,s.zMin,s.zMax].every(Number.isFinite)&&s.xMin<s.xMax&&s.zMin<s.zMax&&[s.xMin,s.xMax,s.zMin,s.zMax].every(v=>Math.abs(v)<=50);
 export const DEFAULT_LATHE_INSERT:LatheInsertShape={xExtent:2,zNear:1,zFar:2};
 /** Rectangular cutting blade, tip centered at the programmed X/Z point. */
 export type PartingToolShape={width:number;length:number};
@@ -53,8 +54,8 @@ function insideConvex(point:Point,polygon:Point[]):boolean{
  * fixed phase during rapid motions; real acceleration, holder geometry,
  * machine limits and nonzero offsets are not modelled. An optional rectangular
  * holder reports potential overlaps with stock at the start of each move. */
-export function simulateLatheStock(result:ParseResult,options:ParserOptions,model:LatheInsertModel='round-nose',grid:LatheStockGrid=LATHE_STOCK,allowPartial=false,partingTools:Record<string,PartingToolShape>={},threadingTools:Record<string,ThreadingToolShape>={},insertShape:LatheInsertShape=DEFAULT_LATHE_INSERT,insertOverrides:Record<string,LatheInsertShape>={},holder?:LatheHolderShape):LatheStockResult{
- if(holder&&(![holder.xMin,holder.xMax,holder.zMin,holder.zMax].every(Number.isFinite)||holder.xMin>=holder.xMax||holder.zMin>=holder.zMax||[holder.xMin,holder.xMax,holder.zMin,holder.zMax].some(v=>Math.abs(v)>50)))return {ok:false,message:'홀더 단면 범위를 확인해 주세요.'};
+export function simulateLatheStock(result:ParseResult,options:ParserOptions,model:LatheInsertModel='round-nose',grid:LatheStockGrid=LATHE_STOCK,allowPartial=false,partingTools:Record<string,PartingToolShape>={},threadingTools:Record<string,ThreadingToolShape>={},insertShape:LatheInsertShape=DEFAULT_LATHE_INSERT,insertOverrides:Record<string,LatheInsertShape>={},holder?:LatheHolderShape,holderOverrides:Record<string,LatheHolderShape>={}):LatheStockResult{
+ if(holder&&!validHolder(holder))return {ok:false,message:'홀더 단면 범위를 확인해 주세요.'};
  if(model==='example-insert'&&!validInsert(insertShape))return {ok:false,message:'인서트 단면 X 길이와 Z 범위를 확인해 주세요.'};
  const table=options.linuxcncLatheToolReference?.tools;
  if(!table)return {ok:false,message:'선반 예제 공구표를 선택해 NC를 다시 해석해 주세요.'};
@@ -71,7 +72,7 @@ export function simulateLatheStock(result:ParseResult,options:ParserOptions,mode
  // Conservative swept section against the stock before each linear piece.
  // During a cut, some of this material may be removed before the holder
  // arrives; report a possibility, not a confirmed physical collision.
- const scanHolder=(a:Point,b:Point,segment:MotionSegment,sync?:{start:number;end:number;direction:number;length:number;halfAngle:number;tipRadius:number}):boolean=>{
+ const scanHolder=(a:Point,b:Point,segment:MotionSegment,holder:LatheHolderShape|undefined,sync?:{start:number;end:number;direction:number;length:number;halfAngle:number;tipRadius:number}):boolean=>{
   if(!holder||holderContacts.some(c=>c.sourceLine===segment.sourceLine&&c.tool===segment.tool&&c.motion===segment.motion))return true;
   const polygon=sweptPolygon(a,b,[{x:holder.xMin,z:holder.zMin},{x:holder.xMax,z:holder.zMin},{x:holder.xMax,z:holder.zMax},{x:holder.xMin,z:holder.zMax}]);
   const eps=1e-7,minX=Math.min(...polygon.map(p=>p.x))-eps,maxX=Math.max(...polygon.map(p=>p.x))+eps,minZ=Math.min(...polygon.map(p=>p.z))-eps,maxZ=Math.max(...polygon.map(p=>p.z))+eps;
@@ -110,7 +111,8 @@ export function simulateLatheStock(result:ParseResult,options:ParserOptions,mode
   if(!finite(segment.start)||!finite(segment.end)||segment.start.y!==0||segment.end.y!==0||segment.plane!=='XZ')return {ok:false,message:'X/Z 평면의 완전히 알려진 경로만 계산합니다.',sourceLine:segment.sourceLine};
   const tool=segment.tool===undefined?undefined:table[String(segment.tool)];
   if(!tool||!Number.isFinite(tool.diameter)||tool.diameter<=0||!Number.isInteger(tool.orientation)||tool.orientation<0||tool.orientation>9||tool.offsetX!==0||tool.offsetZ!==0)return {ok:false,message:'각 이동에 길이 0인 예제 공구표 항목이 필요합니다.',sourceLine:segment.sourceLine};
-  const blade=partingTools[String(segment.tool)],threadTool=threadingTools[String(segment.tool)],currentInsert=insertOverrides[String(segment.tool)]??insertShape;
+  const blade=partingTools[String(segment.tool)],threadTool=threadingTools[String(segment.tool)],currentInsert=insertOverrides[String(segment.tool)]??insertShape,currentHolder=holderOverrides[String(segment.tool)]??holder;
+  if(currentHolder&&!validHolder(currentHolder))return {ok:false,message:'공구별 홀더 단면 범위를 확인해 주세요.',sourceLine:segment.sourceLine};
   if(model==='example-insert'&&!blade&&!threadTool&&!validInsert(currentInsert))return {ok:false,message:'공구별 인서트 단면 X 길이와 Z 범위를 확인해 주세요.',sourceLine:segment.sourceLine};
   if(blade&&(!Number.isFinite(blade.width)||!Number.isFinite(blade.length)||blade.width<=0||blade.width>10||blade.length<=0||blade.length>20))return {ok:false,message:'절단 공구 폭과 길이를 확인해 주세요.',sourceLine:segment.sourceLine};
   if(threadTool&&(!Number.isFinite(threadTool.length)||threadTool.length<=0||threadTool.length>20||!Number.isFinite(threadTool.includedAngleDegrees??60)||(threadTool.includedAngleDegrees??60)<10||(threadTool.includedAngleDegrees??60)>160||!Number.isFinite(threadTool.tipRadius??0)||(threadTool.tipRadius??0)<0||(threadTool.tipRadius??0)>threadTool.length||blade))return {ok:false,message:'나사 공구 길이, 날 각도(10~160도)와 끝 반경을 확인해 주세요.',sourceLine:segment.sourceLine};
@@ -124,7 +126,7 @@ export function simulateLatheStock(result:ParseResult,options:ParserOptions,mode
    if(t.synchronized){
     const dz=b.z-a.z,turnSpan=t.phaseTurnsEnd-t.phaseTurnsStart;
     if(!(turnSpan>0)||!Number.isFinite(turnSpan))return {ok:false,message:'동기화된 나사 이동의 회전량을 확인할 수 없습니다.',sourceLine:segment.sourceLine};
-    if(!scanHolder(a,b,segment,{start:t.phaseTurnsStart,end:t.phaseTurnsEnd,direction:t.spindleDirection,length,halfAngle,tipRadius}))return {ok:false,message:'홀더 간섭 계산 범위를 초과했습니다.',sourceLine:segment.sourceLine};
+    if(!scanHolder(a,b,segment,currentHolder,{start:t.phaseTurnsStart,end:t.phaseTurnsEnd,direction:t.spindleDirection,length,halfAngle,tipRadius}))return {ok:false,message:'홀더 간섭 계산 범위를 초과했습니다.',sourceLine:segment.sourceLine};
     const phaseTolerance=1/(2*angular),lo=t.phaseTurnsStart-phaseTolerance,hi=t.phaseTurnsEnd+phaseTolerance;
     for(let angle=0;angle<angular;angle++){
      const phase=-t.spindleDirection*(angle+.5)/angular,kMin=Math.ceil(lo-phase-1e-12),kMax=Math.floor(hi-phase+1e-12);
@@ -148,7 +150,7 @@ export function simulateLatheStock(result:ParseResult,options:ParserOptions,mode
      }
     }
    }else{
-    if(!scanHolder(a,b,segment))return {ok:false,message:'홀더 간섭 계산 범위를 초과했습니다.',sourceLine:segment.sourceLine};
+    if(!scanHolder(a,b,segment,currentHolder))return {ok:false,message:'홀더 간섭 계산 범위를 초과했습니다.',sourceLine:segment.sourceLine};
     // The ideal preview freezes spindle phase during unsynchronised rapids.
     // Real spindle rotation during these moves is machine-dependent.
     const fraction=((-t.spindleDirection*t.phaseTurnsStart)%1+1)%1;
@@ -166,7 +168,7 @@ export function simulateLatheStock(result:ParseResult,options:ParserOptions,mode
   const radius=tool.diameter/2,shift=blade||threadTool?{x:0,z:0}:latheNoseOriginOffset(tool.orientation,radius),points:Point[]=[];
   if(segment.vertices){for(let i=0;i<segment.vertices.length;i+=3){if(segment.vertices[i+1]!==0)return {ok:false,message:'Y축이 포함된 선반 경로는 지원하지 않습니다.',sourceLine:segment.sourceLine};points.push({x:segment.vertices[i]-shift.x,z:segment.vertices[i+2]-shift.z});}}
   else points.push({x:segment.start.x!-shift.x,z:segment.start.z!-shift.z},{x:segment.end.x!-shift.x,z:segment.end.z!-shift.z});
-  if(holder&&segment.motion!=='G00'){
+  if(currentHolder&&segment.motion!=='G00'){
    // Apply stock removal between short pieces so a following holder does
    // not report material that the cutter already removed on the same move.
    // Each piece remains a conservative pre-cut holder overlap check.
@@ -178,7 +180,7 @@ export function simulateLatheStock(result:ParseResult,options:ParserOptions,mode
    }
    points.length=0;for(const point of refined)points.push(point);
   }
-  for(let i=1;i<points.length;i++){if(!scanHolder(points[i-1],points[i],segment))return {ok:false,message:'홀더 간섭 계산 범위를 초과했습니다.',sourceLine:segment.sourceLine};const polygon=blade?sweptPolygon(points[i-1],points[i],[{x:0,z:-blade.width/2},{x:blade.length,z:-blade.width/2},{x:blade.length,z:blade.width/2},{x:0,z:blade.width/2}]):!threadTool&&model==='example-insert'?sweptInsert(points[i-1],points[i],radius,currentInsert):[];
+  for(let i=1;i<points.length;i++){if(!scanHolder(points[i-1],points[i],segment,currentHolder))return {ok:false,message:'홀더 간섭 계산 범위를 초과했습니다.',sourceLine:segment.sourceLine};const polygon=blade?sweptPolygon(points[i-1],points[i],[{x:0,z:-blade.width/2},{x:blade.length,z:-blade.width/2},{x:blade.length,z:blade.width/2},{x:0,z:blade.width/2}]):!threadTool&&model==='example-insert'?sweptInsert(points[i-1],points[i],radius,currentInsert):[];
    let r0=0,r1=nr-1,z0=0,z1=nz-1;
    if(!blade&&!threadTool&&radius>=1e-4){
     // Conservative X/Z bounds for the swept round nose and insert. Both
