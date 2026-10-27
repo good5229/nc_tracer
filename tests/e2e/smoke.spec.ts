@@ -50,3 +50,16 @@ test('compares a second file in memory and clears it when the active file change
  await expect(page.locator('.metrics')).toContainText('X 2');
  await expect(compare).not.toContainText('compare.nc');
 });
+
+test('filters motion and tools and reports program path distances', async ({page}) => {
+ await page.goto('/nc_tracer/');
+ await page.locator('.topbar input[type=file]').setInputFiles({name:'filters.nc',mimeType:'text/plain',buffer:Buffer.from('G21 G90 G00 X0 Y0 Z0\nT1 G01 X3\nT2 G01 Y4\nM30')});
+ const stats=page.getByRole('region',{name:'경로 필터 및 통계'});
+ await expect(stats).toContainText('2개 이동 블록');
+ await expect(stats).toContainText('7 mm');
+ await stats.getByLabel('T2').uncheck();
+ await expect(stats).toContainText('1개 이동 블록');
+ await expect(stats).toContainText('3 mm');
+ await stats.getByLabel('G01').uncheck();
+ await expect(stats).toContainText('0개 이동 블록');
+});

@@ -1,0 +1,105 @@
+.path-stats {
+  display: grid;
+  gap: 14px;
+  padding: 14px 18px;
+  border-top: 1px solid #293a41;
+  background: #111b21;
+  color: #d2e8e2;
+  font-size: 12px;
+}
+
+.path-stats__filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px 28px;
+}
+
+.path-stats fieldset {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px 14px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.path-stats legend {
+  float: left;
+  margin-right: 4px;
+  color: #819a99;
+  font-size: 11px;
+}
+
+.path-stats__filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.path-stats__filter input { accent-color: #75dfbe; }
+.path-stats__filter--g00 span { color: #f4a340; }
+.path-stats__filter--g01 span { color: #38c8a0; }
+.path-stats__filter--g02 span,
+.path-stats__filter--g03 span { color: #9fb7ff; }
+.path-stats__empty { color: #688083; }
+
+.path-stats__summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 18px;
+  padding: 10px 12px;
+  border: 1px solid #293a41;
+  background: #0d171c;
+}
+
+.path-stats__summary strong { color: #b2fbe2; }
+.path-stats__summary span { color: #9aadaf; }
+.path-stats__summary b { color: #e4efed; font-family: ui-monospace, monospace; }
+
+.path-stats__tables {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(220px, 1fr));
+  gap: 14px;
+}
+
+.path-stats table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.path-stats caption {
+  padding: 0 0 6px;
+  color: #9db2b1;
+  text-align: left;
+  font-weight: 700;
+}
+
+.path-stats th,
+.path-stats td {
+  padding: 5px 8px;
+  border-bottom: 1px solid #26383e;
+}
+
+.path-stats thead th {
+  color: #688083;
+  font-size: 10px;
+  font-weight: 500;
+}
+
+.path-stats tbody th { color: #cce2dc; text-align: left; font-weight: 600; }
+.path-stats__note { color: #688083; font-size: 10px; line-height: 1.5; }
+
+@media (max-width: 640px) {
+  .path-stats { padding: 12px 14px; }
+  .path-stats__filters { gap: 14px; }
+  .path-stats fieldset { flex-basis: 100%; }
+  .path-stats legend { min-width: 48px; }
+  .path-stats__tables { grid-template-columns: minmax(0, 1fr); }
+}
