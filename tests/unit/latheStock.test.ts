@@ -246,3 +246,13 @@ it('matches every spindle revolution for a sharp or rounded insert moving radial
   }
  }
 });
+it('reports swept holder overlap without removing material as if the holder were a cutter',()=>{
+ const code='G21 G90 G18 G8\nT1 M6\nG0 X12 Z0\nG0 Z-3\nG1 X8 F100\nG0 X12\nM2';
+ const parsed=parseGcode(code,options),plain=simulateLatheStock(parsed,options),withHolder=simulateLatheStock(parsed,options,'round-nose',undefined,false,{}, {},undefined,{}, {xMin:-2,xMax:-1,zMin:-.5,zMax:.5});
+ if(!plain.ok||!withHolder.ok)throw new Error('holder example did not finish');
+ expect(withHolder.remaining).toEqual(plain.remaining);expect(withHolder.holderContacts?.length).toBeGreaterThan(0);
+ expect(withHolder.holderContacts?.some(c=>c.tool===1)).toBe(true);
+ const far=simulateLatheStock(parsed,options,'round-nose',undefined,false,{}, {},undefined,{}, {xMin:30,xMax:32,zMin:30,zMax:32});
+ if(!far.ok)throw new Error(far.message);expect(far.holderContacts).toBeUndefined();expect(far.remaining).toEqual(plain.remaining);
+ expect(simulateLatheStock(parsed,options,'round-nose',undefined,false,{}, {},undefined,{}, {xMin:2,xMax:1,zMin:0,zMax:3})).toMatchObject({ok:false,message:expect.stringContaining('홀더')});
+});

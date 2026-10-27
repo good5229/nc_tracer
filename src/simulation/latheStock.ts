@@ -14,10 +14,13 @@ export const LATHE_STOCK_PRESETS:Record<'standard'|'thread-demo'|'pawn-demo',Lat
 /** Physical-tool preview for the original zero-table-radius G76 reference. */
 export const THREAD_POINT_PREVIEW_GRID:LatheStockGrid=LATHE_STOCK_PRESETS['thread-demo'];
 export type LatheGridContact={radius:number;z:number;angleDegrees?:number};
-export type LatheStockResult={ok:true;contact?:LatheGridContact;remaining:Uint8Array;removed:number;angularCells?:number;grid:LatheStockGrid;partial?:boolean;stopLine?:number;stopMessage?:string;phaseUncertainty?:{sourceLine:number;kind:string}[];components?:StockComponent[];componentLabels?:Uint32Array}|{ok:false;message:string;sourceLine?:number;contact?:LatheGridContact};
+export type HolderContact={sourceLine:number;tool:number;motion:string;radius:number;z:number};
+export type LatheStockResult={ok:true;holderContacts?:HolderContact[];contact?:LatheGridContact;remaining:Uint8Array;removed:number;angularCells?:number;grid:LatheStockGrid;partial?:boolean;stopLine?:number;stopMessage?:string;phaseUncertainty?:{sourceLine:number;kind:string}[];components?:StockComponent[];componentLabels?:Uint32Array}|{ok:false;message:string;sourceLine?:number;contact?:LatheGridContact;holderContacts?:HolderContact[]};
 export type LatheInsertModel='round-nose'|'example-insert';
 /** Q2 insert section, relative to the circular nose center, in mm. */
 export type LatheInsertShape={xExtent:number;zNear:number;zFar:number};
+/** Example rectangular holder section relative to the tool reference. */
+export type LatheHolderShape={xMin:number;xMax:number;zMin:number;zMax:number};
 export const DEFAULT_LATHE_INSERT:LatheInsertShape={xExtent:2,zNear:1,zFar:2};
 /** Rectangular cutting blade, tip centered at the programmed X/Z point. */
 export type PartingToolShape={width:number;length:number};
@@ -48,8 +51,10 @@ function insideConvex(point:Point,polygon:Point[]):boolean{
 }
 /** Approximate example stock. Threading uses a symmetric insert section and
  * fixed phase during rapid motions; real acceleration, holder geometry,
- * machine limits and nonzero offsets are not modelled. */
-export function simulateLatheStock(result:ParseResult,options:ParserOptions,model:LatheInsertModel='round-nose',grid:LatheStockGrid=LATHE_STOCK,allowPartial=false,partingTools:Record<string,PartingToolShape>={},threadingTools:Record<string,ThreadingToolShape>={},insertShape:LatheInsertShape=DEFAULT_LATHE_INSERT,insertOverrides:Record<string,LatheInsertShape>={}):LatheStockResult{
+ * machine limits and nonzero offsets are not modelled. An optional rectangular
+ * holder reports potential overlaps with stock at the start of each move. */
+export function simulateLatheStock(result:ParseResult,options:ParserOptions,model:LatheInsertModel='round-nose',grid:LatheStockGrid=LATHE_STOCK,allowPartial=false,partingTools:Record<string,PartingToolShape>={},threadingTools:Record<string,ThreadingToolShape>={},insertShape:LatheInsertShape=DEFAULT_LATHE_INSERT,insertOverrides:Record<string,LatheInsertShape>={},holder?:LatheHolderShape):LatheStockResult{
+ if(holder&&(![holder.xMin,holder.xMax,holder.zMin,holder.zMax].every(Number.isFinite)||holder.xMin>=holder.xMax||holder.zMin>=holder.zMax||[holder.xMin,holder.xMax,holder.zMin,holder.zMax].some(v=>Math.abs(v)>50)))return {ok:false,message:'홀더 단면 범위를 확인해 주세요.'};
  if(model==='example-insert'&&!validInsert(insertShape))return {ok:false,message:'인서트 단면 X 길이와 Z 범위를 확인해 주세요.'};
  const table=options.linuxcncLatheToolReference?.tools;
  if(!table)return {ok:false,message:'선반 예제 공구표를 선택해 NC를 다시 해석해 주세요.'};
@@ -60,9 +65,30 @@ export function simulateLatheStock(result:ParseResult,options:ParserOptions,mode
  const {radialCells:nr,axialCells:nz,step,zMin,angularSegments}=grid;
  const angular=result.segments.some(s=>s.thread)?angularSegments:1;
  if(![grid.radius,grid.zMin,grid.zMax,step,nr,nz,angularSegments].every(Number.isFinite)||!(grid.radius>0)||!(step>0)||!(grid.zMax>grid.zMin)||![nr,nz,angularSegments].every(Number.isInteger)||nr<1||nz<1||angularSegments<3||nr*nz*angular>1_000_000||nr*nz*angularSegments>16_000_000||Math.abs(nr-Math.ceil(grid.radius/step))>0||Math.abs(nz*step-(grid.zMax-grid.zMin))>1e-8)return {ok:false,message:'예제 소재 격자 설정이 유효하지 않습니다.'};
- const remaining=new Uint8Array(nr*nz*angular).fill(1),phaseUncertainty:{sourceLine:number;kind:string}[]=[];let removed=0,work=0;
+ const remaining=new Uint8Array(nr*nz*angular).fill(1),phaseUncertainty:{sourceLine:number;kind:string}[]=[],holderContacts:HolderContact[]=[];let removed=0,work=0;
  const index=(r:number,z:number,a:number)=>(z*nr+r)*angular+a;
- const collision=(message:string,sourceLine:number,contact:LatheGridContact):LatheStockResult=>partial?{ok:true,remaining,removed,grid,partial:true,stopLine:sourceLine,stopMessage:message,contact,...(phaseUncertainty.length?{phaseUncertainty}:{}),...(angular>1?{angularCells:angular}:{})}:{ok:false,message,sourceLine,contact};
+ const collision=(message:string,sourceLine:number,contact:LatheGridContact):LatheStockResult=>partial?{ok:true,remaining,removed,grid,partial:true,stopLine:sourceLine,stopMessage:message,contact,...(holderContacts.length?{holderContacts}:{}),...(phaseUncertainty.length?{phaseUncertainty}:{}),...(angular>1?{angularCells:angular}:{})}:{ok:false,message,sourceLine,contact,...(holderContacts.length?{holderContacts}:{})};
+ // Conservative swept section against the stock before each linear piece.
+ // During a cut, some of this material may be removed before the holder
+ // arrives; report a possibility, not a confirmed physical collision.
+ const scanHolder=(a:Point,b:Point,segment:MotionSegment):boolean=>{
+  if(!holder||holderContacts.some(c=>c.sourceLine===segment.sourceLine&&c.tool===segment.tool&&c.motion===segment.motion))return true;
+  const polygon=sweptPolygon(a,b,[{x:holder.xMin,z:holder.zMin},{x:holder.xMax,z:holder.zMin},{x:holder.xMax,z:holder.zMax},{x:holder.xMin,z:holder.zMax}]);
+  const eps=1e-7,minX=Math.min(...polygon.map(p=>p.x))-eps,maxX=Math.max(...polygon.map(p=>p.x))+eps,minZ=Math.min(...polygon.map(p=>p.z))-eps,maxZ=Math.max(...polygon.map(p=>p.z))+eps;
+  const minR=minX<=0&&maxX>=0?0:Math.min(Math.abs(minX),Math.abs(maxX)),maxR=Math.max(Math.abs(minX),Math.abs(maxX));
+  const r0=Math.max(0,Math.ceil(minR/step-.5)),r1=Math.min(nr-1,Math.floor(maxR/step-.5)),z0=Math.max(0,Math.ceil((minZ-zMin)/step-.5)),z1=Math.min(nz-1,Math.floor((maxZ-zMin)/step-.5));
+  work+=Math.max(0,r1-r0+1)*Math.max(0,z1-z0+1)*8;if(work>120_000_000)return false;
+  for(let z=z0;z<=z1;z++)for(let r=r0;r<=r1;r++){
+   const x=(r+.5)*step,pz=zMin+(z+.5)*step;
+   if(!insideConvex({x,z:pz},polygon)&&!insideConvex({x:-x,z:pz},polygon))continue;
+   work+=angular;if(work>120_000_000)return false;
+   for(let angle=0;angle<angular;angle++)if(remaining[index(r,z,angle)]){
+    if(holderContacts.length>=1000)return false;
+    holderContacts.push({sourceLine:segment.sourceLine,tool:segment.tool!,motion:segment.motion,radius:x,z:pz});return true;
+   }
+  }
+  return true;
+ };
  for(let r=0;r<nr;r++)if((r+.5)*step>grid.radius)for(let z=0;z<nz;z++)for(let a=0;a<angular;a++)remaining[index(r,z,a)]=0;
  for(const segment of result.segments){
   if(!finite(segment.start)||!finite(segment.end)||segment.start.y!==0||segment.end.y!==0||segment.plane!=='XZ')return {ok:false,message:'X/Z 평면의 완전히 알려진 경로만 계산합니다.',sourceLine:segment.sourceLine};
@@ -79,6 +105,7 @@ export function simulateLatheStock(result:ParseResult,options:ParserOptions,mode
    if(!t.external || ![t.pitch,t.phaseTurnsStart,t.phaseTurnsEnd].every(Number.isFinite) || t.pitch<step*2 || t.indexOffsetDegrees!==0 || ![1,-1].includes(t.spindleDirection) || segment.start.x!<0 || segment.end.x!<0 || (t.synchronized&&segment.motion!=='G01'))return {ok:false,message:'예제 나사 계산은 외경 나사, 0.4mm 이상 피치와 기준 위상 0인 경우만 지원합니다.',sourceLine:segment.sourceLine};
    work+=nr*nz*angular;if(work>120_000_000)return {ok:false,message:'선반 형상 계산 범위를 초과했습니다.'};
    const halfAngle=(threadTool?.includedAngleDegrees??60)*Math.PI/360,tipRadius=threadTool?.tipRadius??0,length=threadTool?.length??2,a={x:segment.start.x!,z:segment.start.z!},b={x:segment.end.x!,z:segment.end.z!};
+   if(!scanHolder(a,b,segment))return {ok:false,message:'홀더 간섭 계산 범위를 초과했습니다.',sourceLine:segment.sourceLine};
    if(t.synchronized){
     const dz=b.z-a.z,turnSpan=t.phaseTurnsEnd-t.phaseTurnsStart;
     if(!(turnSpan>0)||!Number.isFinite(turnSpan))return {ok:false,message:'동기화된 나사 이동의 회전량을 확인할 수 없습니다.',sourceLine:segment.sourceLine};
@@ -122,7 +149,7 @@ export function simulateLatheStock(result:ParseResult,options:ParserOptions,mode
   const radius=tool.diameter/2,shift=blade||threadTool?{x:0,z:0}:latheNoseOriginOffset(tool.orientation,radius),points:Point[]=[];
   if(segment.vertices){for(let i=0;i<segment.vertices.length;i+=3){if(segment.vertices[i+1]!==0)return {ok:false,message:'Y축이 포함된 선반 경로는 지원하지 않습니다.',sourceLine:segment.sourceLine};points.push({x:segment.vertices[i]-shift.x,z:segment.vertices[i+2]-shift.z});}}
   else points.push({x:segment.start.x!-shift.x,z:segment.start.z!-shift.z},{x:segment.end.x!-shift.x,z:segment.end.z!-shift.z});
-  for(let i=1;i<points.length;i++){const polygon=blade?sweptPolygon(points[i-1],points[i],[{x:0,z:-blade.width/2},{x:blade.length,z:-blade.width/2},{x:blade.length,z:blade.width/2},{x:0,z:blade.width/2}]):!threadTool&&model==='example-insert'?sweptInsert(points[i-1],points[i],radius,currentInsert):[];
+  for(let i=1;i<points.length;i++){if(!scanHolder(points[i-1],points[i],segment))return {ok:false,message:'홀더 간섭 계산 범위를 초과했습니다.',sourceLine:segment.sourceLine};const polygon=blade?sweptPolygon(points[i-1],points[i],[{x:0,z:-blade.width/2},{x:blade.length,z:-blade.width/2},{x:blade.length,z:blade.width/2},{x:0,z:blade.width/2}]):!threadTool&&model==='example-insert'?sweptInsert(points[i-1],points[i],radius,currentInsert):[];
    let r0=0,r1=nr-1,z0=0,z1=nz-1;
    if(!blade&&!threadTool&&radius>=1e-4){
     // Conservative X/Z bounds for the swept round nose and insert. Both
@@ -148,5 +175,5 @@ export function simulateLatheStock(result:ParseResult,options:ParserOptions,mode
    }
   }
  }
- return {ok:true,remaining,removed,grid,...(partial?{partial:true,stopLine:result.warnings[0].sourceLine,stopMessage:result.warnings[0].message}:{}),...(phaseUncertainty.length?{phaseUncertainty}:{}),...(angular>1?{angularCells:angular}:{})};
+ return {ok:true,remaining,removed,grid,...(holderContacts.length?{holderContacts}:{}),...(partial?{partial:true,stopLine:result.warnings[0].sourceLine,stopMessage:result.warnings[0].message}:{}),...(phaseUncertainty.length?{phaseUncertainty}:{}),...(angular>1?{angularCells:angular}:{})};
 }
