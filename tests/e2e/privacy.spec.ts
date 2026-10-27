@@ -56,3 +56,18 @@ test('local production build works with external requests blocked', async ({page
  await expect(page.locator('.metrics')).toContainText('행 4');
  await expect(page.locator('.viewport canvas')).toBeVisible();
 });
+
+test('drop and comparison do not transmit file data', async ({page}) => {
+ await page.goto('/nc_tracer/');
+ const requests: {url:string;body:string;method:string}[]=[];
+ page.on('request', request=>requests.push({url:request.url(),body:request.postData() ?? '',method:request.method()}));
+ const transfer=await page.evaluateHandle(()=>{const d=new DataTransfer();d.items.add(new File(['(drop-secret-91)\nG21 G90 G00 X0 Y0 Z0\nG01 X7\nM30'],'drop-private.nc',{type:'text/plain'}));return d;});
+ await page.locator('.app').dispatchEvent('drop',{dataTransfer:transfer});
+ await expect(page.locator('.metrics')).toContainText('X 7');
+ await page.getByText('파일 비교',{exact:false}).first().click();
+ await page.locator('.comparison input[type=file]').setInputFiles({name:'comparison-private.nc',mimeType:'text/plain',buffer:Buffer.from('(compare-secret-92)\nG21 G90 G00 X0 Y0 Z0\nG01 X8\nM30')});
+ await expect(page.locator('.comparison')).toContainText('comparison-private.nc');
+ expect(requests.filter(r=>r.method!=='GET' || /drop-secret-91|drop-private|compare-secret-92|comparison-private/.test(r.url+r.body))).toEqual([]);
+ const storage=await page.evaluate(async()=>JSON.stringify({local:{...localStorage},session:{...sessionStorage},databases:await indexedDB.databases(),caches:await caches.keys()}));
+ expect(storage).not.toMatch(/drop-secret-91|drop-private|compare-secret-92|comparison-private/);
+});
