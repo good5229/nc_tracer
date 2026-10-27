@@ -16,6 +16,9 @@ export const THREAD_POINT_PREVIEW_GRID:LatheStockGrid=LATHE_STOCK_PRESETS['threa
 export type LatheGridContact={radius:number;z:number;angleDegrees?:number};
 export type LatheStockResult={ok:true;contact?:LatheGridContact;remaining:Uint8Array;removed:number;angularCells?:number;grid:LatheStockGrid;partial?:boolean;stopLine?:number;stopMessage?:string;phaseUncertainty?:{sourceLine:number;kind:string}[];components?:StockComponent[];componentLabels?:Uint32Array}|{ok:false;message:string;sourceLine?:number;contact?:LatheGridContact};
 export type LatheInsertModel='round-nose'|'example-insert';
+/** Q2 insert section, relative to the circular nose center, in mm. */
+export type LatheInsertShape={xExtent:number;zNear:number;zFar:number};
+export const DEFAULT_LATHE_INSERT:LatheInsertShape={xExtent:2,zNear:1,zFar:2};
 /** Rectangular cutting blade, tip centered at the programmed X/Z point. */
 export type PartingToolShape={width:number;length:number};
 /** Symmetric threading insert; the programmed point is its most inward tip. */
@@ -37,7 +40,7 @@ function sweptPolygon(a:Point,b:Point,local:Point[]):Point[]{
  for(const p of [...points].reverse()){while(upper.length>=2&&cross(upper[upper.length-2],upper[upper.length-1],p)<=0)upper.pop();upper.push(p);}
  lower.pop();upper.pop();return lower.concat(upper);
 }
-function sweptInsert(a:Point,b:Point,radius:number):Point[]{return sweptPolygon(a,b,[{x:-radius,z:0},{x:0,z:-radius},{x:2,z:1},{x:2,z:2}]);}
+function sweptInsert(a:Point,b:Point,radius:number,shape:LatheInsertShape):Point[]{return sweptPolygon(a,b,[{x:-radius,z:0},{x:0,z:-radius},{x:shape.xExtent,z:shape.zNear},{x:shape.xExtent,z:shape.zFar}]);}
 function insideConvex(point:Point,polygon:Point[]):boolean{
  for(let i=0;i<polygon.length;i++){const a=polygon[i],b=polygon[(i+1)%polygon.length];if((b.x-a.x)*(point.z-a.z)-(b.z-a.z)*(point.x-a.x)<-1e-12)return false;}
  return polygon.length>=3;
@@ -45,7 +48,8 @@ function insideConvex(point:Point,polygon:Point[]):boolean{
 /** Approximate example stock. Threading uses a symmetric insert section and
  * fixed phase during rapid motions; real acceleration, holder geometry,
  * machine limits and nonzero offsets are not modelled. */
-export function simulateLatheStock(result:ParseResult,options:ParserOptions,model:LatheInsertModel='round-nose',grid:LatheStockGrid=LATHE_STOCK,allowPartial=false,partingTools:Record<string,PartingToolShape>={},threadingTools:Record<string,ThreadingToolShape>={}):LatheStockResult{
+export function simulateLatheStock(result:ParseResult,options:ParserOptions,model:LatheInsertModel='round-nose',grid:LatheStockGrid=LATHE_STOCK,allowPartial=false,partingTools:Record<string,PartingToolShape>={},threadingTools:Record<string,ThreadingToolShape>={},insertShape:LatheInsertShape=DEFAULT_LATHE_INSERT):LatheStockResult{
+ if(model==='example-insert'&&(![insertShape.xExtent,insertShape.zNear,insertShape.zFar].every(Number.isFinite)||insertShape.xExtent<=0||insertShape.xExtent>20||insertShape.zNear<0||insertShape.zFar<=insertShape.zNear||insertShape.zFar>20))return {ok:false,message:'인서트 단면 X 길이와 Z 범위를 확인해 주세요.'};
  const table=options.linuxcncLatheToolReference?.tools;
  if(!table)return {ok:false,message:'선반 예제 공구표를 선택해 NC를 다시 해석해 주세요.'};
  const partial=allowPartial&&result.status==='PARTIAL'&&result.warnings.length===1&&(result.warnings[0].code==='ENTRY_TOO_SHORT'||(options.linuxcncPawnContourReference===true&&result.warnings[0].code==='CONCAVE_GOUGING'));
@@ -116,7 +120,7 @@ export function simulateLatheStock(result:ParseResult,options:ParserOptions,mode
   const radius=tool.diameter/2,shift=blade||threadTool?{x:0,z:0}:latheNoseOriginOffset(tool.orientation,radius),points:Point[]=[];
   if(segment.vertices){for(let i=0;i<segment.vertices.length;i+=3){if(segment.vertices[i+1]!==0)return {ok:false,message:'Y축이 포함된 선반 경로는 지원하지 않습니다.',sourceLine:segment.sourceLine};points.push({x:segment.vertices[i]-shift.x,z:segment.vertices[i+2]-shift.z});}}
   else points.push({x:segment.start.x!-shift.x,z:segment.start.z!-shift.z},{x:segment.end.x!-shift.x,z:segment.end.z!-shift.z});
-  for(let i=1;i<points.length;i++){const polygon=blade?sweptPolygon(points[i-1],points[i],[{x:0,z:-blade.width/2},{x:blade.length,z:-blade.width/2},{x:blade.length,z:blade.width/2},{x:0,z:blade.width/2}]):!threadTool&&model==='example-insert'?sweptInsert(points[i-1],points[i],radius):[];
+  for(let i=1;i<points.length;i++){const polygon=blade?sweptPolygon(points[i-1],points[i],[{x:0,z:-blade.width/2},{x:blade.length,z:-blade.width/2},{x:blade.length,z:blade.width/2},{x:0,z:blade.width/2}]):!threadTool&&model==='example-insert'?sweptInsert(points[i-1],points[i],radius,insertShape):[];
    let r0=0,r1=nr-1,z0=0,z1=nz-1;
    if(!blade&&!threadTool&&radius>=1e-4){
     // Conservative X/Z bounds for the swept round nose and insert. Both

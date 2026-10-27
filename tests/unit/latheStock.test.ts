@@ -46,6 +46,9 @@ it('sweeps the example insert body as well as the round nose',()=>{
  const round=simulateLatheStock(parsed,options,'round-nose'),insert=simulateLatheStock(parsed,options,'example-insert');
  expect(round.ok).toBe(true);expect(insert.ok).toBe(true);
  if(round.ok&&insert.ok){expect(insert.removed).toBeGreaterThan(round.removed);expect(insert.remaining[17*50+47]).toBe(0);expect(round.remaining[17*50+47]).toBe(1);}
+ const narrow=simulateLatheStock(parsed,options,'example-insert',undefined,false,{}, {},{xExtent:1,zNear:1,zFar:2});
+ if(!narrow.ok||!insert.ok)throw new Error('insert simulation did not finish');expect(narrow.removed).not.toBe(insert.removed);
+ expect(simulateLatheStock(parsed,options,'example-insert',undefined,false,{}, {},{xExtent:1,zNear:2,zFar:1})).toMatchObject({ok:false,message:expect.stringContaining('인서트 단면')});
  const wrongOrientation={...options,linuxcncLatheToolReference:{tools:{'1':{diameter:.4,orientation:3,offsetX:0,offsetZ:0}}}};
  expect(simulateLatheStock(parsed,wrongOrientation,'example-insert')).toMatchObject({ok:false,message:expect.stringContaining('방향 2')});
 });
