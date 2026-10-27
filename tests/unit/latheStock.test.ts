@@ -1,7 +1,7 @@
 import {expect,it} from 'vitest';
 import {readFileSync} from 'node:fs';
 import {parseGcode} from '../../src/parser/gcode';
-import {simulateLatheStock} from '../../src/simulation/latheStock';
+import {simulateLatheStock,LATHE_STOCK_PRESETS} from '../../src/simulation/latheStock';
 const options={controllerProfile:'linuxcnc' as const,linuxcncLatheToolReference:{tools:{'1':{diameter:.4,orientation:2,offsetX:0,offsetZ:0}}},initialPosition:{x:0,y:0,z:0},initialDistanceMode:'absolute' as const};
 const src='G21 G90 G18 G8\nT1 M6\nG43\nG0 X10 Z1\nG41\nG1 X8 Z1 F100\nG1 X8 Z-5\nG1 X11 Z-5\nG40\nG0 X12\nM2';
 it('removes stock using the loaded example tool and retains uncompensated material',()=>{
@@ -84,4 +84,10 @@ it('mirrors the ideal thread phase when the spindle direction reverses',()=>{
  if(!forward.ok)throw new Error(forward.message);if(!reverse.ok)throw new Error(reverse.message);
  const nr=50,na=48,z=8,r=49,offset=(z*nr+r)*na;
  for(let a=0;a<na;a++)expect(forward.remaining[offset+a]).toBe(reverse.remaining[offset+na-1-a]);
+});
+it('uses explicit stock dimensions and rejects inconsistent grids',()=>{
+ const code='G21 G90 G18 G8\nT1 M6\nG0 X12 Z0\nS500 M3\nG0 X11\nG76 P1.2 Z-5.5 I-1 J.2 K1 R1\nG0 X12\nM2';
+ const parsed=parseGcode(code,options),grid=LATHE_STOCK_PRESETS['thread-demo'],outcome=simulateLatheStock(parsed,options,'round-nose',grid);
+ expect(outcome.ok).toBe(true);if(outcome.ok){expect(outcome.grid).toEqual(grid);expect(outcome.remaining.length).toBe(32*165*48);}
+ expect(simulateLatheStock(parsed,options,'round-nose',{...grid,radialCells:31})).toMatchObject({ok:false,message:expect.stringContaining('격자 설정')});
 });

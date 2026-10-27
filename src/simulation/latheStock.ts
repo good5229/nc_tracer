@@ -3,7 +3,13 @@ import {latheNoseOriginOffset} from '../parser/linuxcncLatheNose';
 
 /** Example stock in mm, with an axis along Z and uniform 0.2 mm cells. */
 export const LATHE_STOCK={radius:10,zMin:-6,zMax:-1,step:.2,radialCells:50,axialCells:25,angularSegments:48} as const;
-export type LatheStockResult={ok:true;remaining:Uint8Array;removed:number;angularCells?:number}|{ok:false;message:string;sourceLine?:number};
+export type LatheStockGrid={radius:number;zMin:number;zMax:number;step:number;radialCells:number;axialCells:number;angularSegments:number};
+export const LATHE_STOCK_PRESETS:Record<'standard'|'thread-demo'|'pawn-demo',LatheStockGrid>={
+ standard:LATHE_STOCK,
+ 'thread-demo':{radius:3.175,zMin:-16.5,zMax:0,step:.1,radialCells:32,axialCells:165,angularSegments:48},
+ 'pawn-demo':{radius:15,zMin:-40,zMax:4,step:.2,radialCells:75,axialCells:220,angularSegments:48},
+};
+export type LatheStockResult={ok:true;remaining:Uint8Array;removed:number;angularCells?:number;grid:LatheStockGrid}|{ok:false;message:string;sourceLine?:number};
 export type LatheInsertModel='round-nose'|'example-insert';
 type Point={x:number;z:number};
 const finite=(p:MotionSegment['start'])=>typeof p.x==='number'&&Number.isFinite(p.x)&&typeof p.y==='number'&&Number.isFinite(p.y)&&typeof p.z==='number'&&Number.isFinite(p.z);
@@ -30,15 +36,17 @@ function insideConvex(point:Point,polygon:Point[]):boolean{
 /** Approximate example stock. Threading assumes an ideal sharp 60-degree
  * external insert and a fixed phase during rapid motions; real acceleration,
  * holder geometry, machine limits and nonzero offsets are not modelled. */
-export function simulateLatheStock(result:ParseResult,options:ParserOptions,model:LatheInsertModel='round-nose'):LatheStockResult{
+export function simulateLatheStock(result:ParseResult,options:ParserOptions,model:LatheInsertModel='round-nose',grid:LatheStockGrid=LATHE_STOCK):LatheStockResult{
  const table=options.linuxcncLatheToolReference?.tools;
  if(!table)return {ok:false,message:'선반 예제 공구표를 선택해 NC를 다시 해석해 주세요.'};
  if(result.status!=='SUPPORTED'||result.warnings.length)return {ok:false,message:'NC 전체 경로를 확인하지 못해 완성 형상 계산을 중단했습니다.'};
  if(!result.segments.length)return {ok:false,message:'계산할 선반 이동 경로가 없습니다.'};
  if(result.segments.some(s=>/\bG\s*0*76(?:\D|$)/i.test(s.rawCode)&&!s.thread))return {ok:false,message:'나사 가공의 동기화 정보를 확인할 수 없습니다.'};
- const {radialCells:nr,axialCells:nz,step,zMin,angularSegments}=LATHE_STOCK;
+ const {radialCells:nr,axialCells:nz,step,zMin,angularSegments}=grid;
+ if(![grid.radius,grid.zMin,grid.zMax,step,nr,nz,angularSegments].every(Number.isFinite)||!(grid.radius>0)||!(step>0)||!(grid.zMax>grid.zMin)||![nr,nz,angularSegments].every(Number.isInteger)||nr<1||nz<1||angularSegments<3||nr*nz*angularSegments>1_000_000||Math.abs(nr-Math.ceil(grid.radius/step))>0||Math.abs(nz*step-(grid.zMax-grid.zMin))>1e-8)return {ok:false,message:'예제 소재 격자 설정이 유효하지 않습니다.'};
  const angular=result.segments.some(s=>s.thread)?angularSegments:1,remaining=new Uint8Array(nr*nz*angular).fill(1);let removed=0,edges=0;
  const index=(r:number,z:number,a:number)=>(z*nr+r)*angular+a;
+ for(let r=0;r<nr;r++)if((r+.5)*step>grid.radius)for(let z=0;z<nz;z++)for(let a=0;a<angular;a++)remaining[index(r,z,a)]=0;
  for(const segment of result.segments){
   if(!finite(segment.start)||!finite(segment.end)||segment.start.y!==0||segment.end.y!==0||segment.plane!=='XZ')return {ok:false,message:'X/Z 평면의 완전히 알려진 경로만 계산합니다.',sourceLine:segment.sourceLine};
   const tool=segment.tool===undefined?undefined:table[String(segment.tool)];
@@ -86,5 +94,5 @@ export function simulateLatheStock(result:ParseResult,options:ParserOptions,mode
    }
   }
  }
- return {ok:true,remaining,removed,...(angular>1?{angularCells:angular}:{})};
+ return {ok:true,remaining,removed,grid,...(angular>1?{angularCells:angular}:{})};
 }

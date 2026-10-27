@@ -54,3 +54,8 @@ test('renders an angular 3D stock for an example G76 thread',async({page})=>{
  const region=page.getByRole('region',{name:'선반 예제 소재 형상'});await region.getByRole('button',{name:'선반 소재 형상 계산'}).click();
  await expect(region.getByRole('status')).toContainText('제거된 3D 격자');await expect(region.getByLabel('선반 예제 소재 3D 표시')).toBeVisible();
 });
+test('selects visibly labelled stock assumptions for the original demos',async({page})=>{
+ await page.goto('/');await page.getByLabel('LinuxCNC 데모').selectOption('lathe-g76.ngc');
+ let region=page.getByRole('region',{name:'선반 예제 소재 형상'});await expect(region.getByLabel('예제 소재')).toHaveValue('thread-demo');await expect(region).toContainText('반경 3.175mm');
+ await page.getByLabel('LinuxCNC 데모').selectOption('lathe_g70_71_demo.ngc');region=page.getByRole('region',{name:'선반 예제 소재 형상'});await expect(region.getByLabel('예제 소재')).toHaveValue('pawn-demo');await expect(region).toContainText('반경 15mm');
+});
