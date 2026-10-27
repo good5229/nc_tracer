@@ -26,7 +26,7 @@ jobs:
           T9 P9 Z0 D0.5 Q0
           T10 P10 Z0 D0.5 Q0
           TOOLS
-            for file in demo/*.ngc; do
+            for file in demo/*.ngc tests/fixtures/g71_2_*.ngc; do
               name=$(basename "$file")
               output="/tmp/linuxcnc-reference/${name}-diameter-${diameter}.txt"
               echo "--- $name, T1 D${diameter} ---"

@@ -1,0 +1,14 @@
+(Reference contour: G71.2 with a single recessed section)
+G18 G8 G21 G90
+F100
+O100 SUB
+G0 X4 Z1
+G1 X4 Z-3
+G1 X6 Z-4
+G1 X4 Z-5
+G1 X4 Z-10
+G1 X10 Z-10
+O100 ENDSUB
+G0 X10 Z1
+G71.2 Q100 X10 Z1 D0 I2 R0.3
+M2
