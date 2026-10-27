@@ -129,10 +129,10 @@ test('viewer visibility choices survive path filter rebuilds', async ({page}) =>
  await expect(page.locator('.counter')).toHaveText('1 / 2');
  await page.getByLabel('G00 급속',{exact:true}).uncheck();
  const canvas=page.locator('.viewport canvas');
+ await page.evaluate(()=>new Promise<void>(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve()))));
  const before=await canvas.screenshot();
  await page.getByRole('region',{name:'경로 필터 및 통계'}).getByLabel('G02').uncheck();
- const after=await canvas.screenshot();
- expect(after.equals(before)).toBe(true);
+ await expect.poll(async()=> (await canvas.screenshot()).equals(before)).toBe(true);
 });
 
 test('replacing an interrupted large drawing restores the selection highlight', async ({browser}) => {
