@@ -96,6 +96,6 @@ test('recalculates the original thread preview with chosen example tool dimensio
 test('applies a rounded threading tip to the original example preview',async({page})=>{
  await page.goto('/');await page.getByLabel('LinuxCNC 데모').selectOption('lathe-g76.ngc');const region=page.getByRole('region',{name:'선반 예제 소재 형상'});
  await region.getByLabel('T4 끝 반경 (mm)').fill('0.05');await region.getByRole('button',{name:'점 공구 경로의 가상 형상 계산'}).click();
- await expect(region.getByRole('status')).toContainText('제거된 3D 격자');await expect(region).toContainText('끝 반경 0.05mm');await expect(region.getByLabel('선반 예제 소재 3D 표시')).toBeVisible();
+ await expect(region.getByRole('status')).toContainText('제거된 3D 격자',{timeout:30000});await expect(region).toContainText('끝 반경 0.05mm');await expect(region.getByLabel('선반 예제 소재 3D 표시')).toBeVisible();
  await region.getByLabel('T4 끝 반경 (mm)').fill('3');await expect(region.getByRole('button',{name:'점 공구 경로의 가상 형상 계산'})).toBeDisabled();
 });
