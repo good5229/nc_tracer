@@ -44,3 +44,7 @@ Astra 판정(APPROVED/REWORK/BLOCKED):
 - 로컬 macOS Chromium headless 합성 입력 1k/10k/100k: 파일 입력부터 해석 상태 표시까지 약 537/507/1655 ms. 메모리 또는 장시간 상호작용 측정은 아니다.
 - Astra 구현 검토에서 수치 범위, 긴 코드 목록, 생산 빌드 테스트 관련 재작업 요청. 후속 수정과 재검증을 별도로 확인해야 한다.
 - Edge, 실제 사용자 NC, 접근성 전체 및 저장소 관찰, 대용량 메모리 측정은 미수행. 원호 및 고급 기능은 미지원.
+
+## 2026-10-27 Chrome·Edge 공개 URL 검사
+
+커밋 `279cc26`의 [GitHub Actions 실행](https://github.com/good5229/nc_tracer/actions/runs/40425982598)은 빌드·배포 및 공개 URL의 Chrome/Edge 합성 파일 입력·코드 선택·다음 블록·캔버스·새로고침 검증을 통과했다. 이 기록은 해당 커밋에 한한다. 실제 NC 파일 및 후속 커밋에 대한 검증 결과와 구별한다.
