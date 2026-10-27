@@ -214,3 +214,27 @@ it('matches exhaustive spindle-phase samples for a rounded tip on a tapered thre
  }
  expect(removed).toBeGreaterThan(0);
 });
+it('matches every spindle revolution for a sharp or rounded insert moving radially during synchronization',()=>{
+ const setup={...options,initialPosition:{x:12,y:0,z:1}};
+ const parsed=parseGcode('G21 G90 G18 G8\nT1 M6\nG0 X12 Z0\nS500 M3\nG0 X11\nG76 P1.2 Z-5.5 I-1 J.2 K1 R1\nM2',setup);
+ const template=parsed.segments.find(s=>s.thread?.kind==='thread-cut')!;
+ const grid={radius:5,zMin:-5,zMax:0,step:.25,radialCells:20,axialCells:20,angularSegments:12};
+ let seed=918273;const random=()=>{seed=(1664525*seed+1013904223)>>>0;return seed/2**32;};
+ const cases=[[0,6,-2.875,-2.875,0],[6,0,-4.5,-.5,0],[0,6,-2.875,-2.875,.2],[5,1,-4,-1,.2]];
+ for(let i=0;i<30;i++)cases.push([random()*6,random()*6,-5+random()*5,-5+random()*5,i%2?0:random()*.5]);
+ for(const [startX,endX,startZ,endZ,tip] of cases){
+  const segment={...template,start:{x:startX,y:0,z:startZ},end:{x:endX,y:0,z:endZ},thread:{...template.thread!,phaseTurnsStart:.13,phaseTurnsEnd:20.13,pitch:1.2}};
+  const shape=simulateLatheStock({...parsed,segments:[segment]},setup,'round-nose',grid,false,{}, {'1':{length:1,tipRadius:tip}});if(!shape.ok)throw new Error(shape.message);
+  for(let a=0;a<grid.angularSegments;a++)for(let z=0;z<grid.axialCells;z++)for(let r=0;r<grid.radialCells;r++){
+   const phase=-segment.thread.spindleDirection*(a+.5)/grid.angularSegments,lo=Math.ceil(segment.thread.phaseTurnsStart-1/(2*grid.angularSegments)-phase-1e-12),hi=Math.floor(segment.thread.phaseTurnsEnd+1/(2*grid.angularSegments)-phase+1e-12);
+   const x=(r+.5)*grid.step,pz=grid.zMin+(z+.5)*grid.step;let hit=false;
+   for(let k=lo;k<=hi;k++){
+    const q=Math.max(0,Math.min(1,(phase+k-segment.thread.phaseTurnsStart)/20)),d=x-(startX+(endX-startX)*q),h=Math.abs(pz-(startZ+(endZ-startZ)*q));
+    if(d<0||d>1)continue;
+    const tangent=tip*(1-Math.sin(Math.PI/6)),width=tip>0&&d<tangent?Math.sqrt(Math.max(0,2*tip*d-d*d)):(d+(tip?tip*(1/Math.sin(Math.PI/6)-1):0))*Math.tan(Math.PI/6);
+    if(h<=width){hit=true;break;}
+   }
+   expect(shape.remaining[(z*grid.radialCells+r)*grid.angularSegments+a],`start ${startX}, end ${endX}, tip ${tip}, angle ${a}, z ${z}, r ${r}`).toBe(hit?0:1);
+  }
+ }
+});

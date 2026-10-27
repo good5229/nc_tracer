@@ -84,9 +84,13 @@ export function simulateLatheStock(result:ParseResult,options:ParserOptions,mode
       const cell=index(r,z,angle);if(!remaining[cell])continue;
       const x=(r+.5)*step,pz=zMin+(z+.5)*step,near=dz===0?kMin:t.phaseTurnsStart+(pz-a.z)/dz*turnSpan-phase;
       const candidates=[kMin,kMax,Math.max(kMin,Math.min(kMax,Math.floor(near))),Math.max(kMin,Math.min(kMax,Math.ceil(near)))],dx=b.x-a.x;
-      if(tipRadius>0&&dx!==0&&Number.isFinite(dz/dx)){
-       const slope=dz/dx,tangentDepth=tipRadius*(1-Math.sin(halfAngle));
-       for(const d of [0,tangentDepth,length,tipRadius*(1-slope/Math.hypot(1,slope)),tipRadius*(1+slope/Math.hypot(1,slope))]){
+      if(dx!==0){
+       // A moving tip can enter and leave this cell's radial range between
+       // revolutions even for a sharp insert. Check integer phases adjacent
+       // to both depth boundaries as well as the rounded-nose extrema.
+       const depths=[0,length],slope=dz/dx;
+       if(tipRadius>0&&Number.isFinite(slope))depths.push(tipRadius*(1-Math.sin(halfAngle)),tipRadius*(1-slope/Math.hypot(1,slope)),tipRadius*(1+slope/Math.hypot(1,slope)));
+       for(const d of depths){
         const k=t.phaseTurnsStart+(x-a.x-d)/dx*turnSpan-phase;
         candidates.push(Math.max(kMin,Math.min(kMax,Math.floor(k))),Math.max(kMin,Math.min(kMax,Math.ceil(k))));
        }
