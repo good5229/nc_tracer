@@ -45,3 +45,14 @@ test('replacing a large file while it is being parsed keeps only the newest data
  await page.waitForTimeout(300);
  await expect(page.locator('.metrics')).toContainText('X 42');
 });
+
+test('local production build works with external requests blocked', async ({page}) => {
+ await page.route('**/*', route => {
+  const url=new URL(route.request().url());
+  return url.hostname==='127.0.0.1' ? route.continue() : route.abort();
+ });
+ await page.goto('/nc_tracer/');
+ await page.getByRole('button',{name:'예제 불러오기'}).click();
+ await expect(page.locator('.metrics')).toContainText('행 4');
+ await expect(page.locator('.viewport canvas')).toBeVisible();
+});

@@ -298,7 +298,7 @@ export default function Viewer3D({
     engine.playedRapid.geometry.setDrawRange(0, (counts?.rapid ?? 0) * 2);
     engine.playedLinear.geometry.setDrawRange(0, (counts?.linear ?? 0) * 2);
     engine.requestRender();
-  }, [progressSegmentId, ready]);
+  }, [progressSegmentId, ready, segments]);
 
   function frameSelection() {
     const engine = engineRef.current;
