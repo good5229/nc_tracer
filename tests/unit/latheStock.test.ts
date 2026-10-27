@@ -48,6 +48,11 @@ it('sweeps the example insert body as well as the round nose',()=>{
  if(round.ok&&insert.ok){expect(insert.removed).toBeGreaterThan(round.removed);expect(insert.remaining[17*50+47]).toBe(0);expect(round.remaining[17*50+47]).toBe(1);}
  const narrow=simulateLatheStock(parsed,options,'example-insert',undefined,false,{}, {},{xExtent:1,zNear:1,zFar:2});
  if(!narrow.ok||!insert.ok)throw new Error('insert simulation did not finish');expect(narrow.removed).not.toBe(insert.removed);
+ const override=simulateLatheStock(parsed,options,'example-insert',undefined,false,{}, {},undefined,{'1':{xExtent:1,zNear:1,zFar:2}});if(!override.ok)throw new Error(override.message);expect(override.remaining).toEqual(narrow.remaining);
+ expect(simulateLatheStock(parsed,options,'example-insert',undefined,false,{}, {},undefined,{'1':{xExtent:1,zNear:2,zFar:1}})).toMatchObject({ok:false,message:expect.stringContaining('공구별 인서트')});
+ const secondTool={...parsed,segments:parsed.segments.map(segment=>({...segment,tool:2}))},twoTools={...options,linuxcncLatheToolReference:{tools:{'1':options.linuxcncLatheToolReference.tools['1'],'2':options.linuxcncLatheToolReference.tools['1']}}};
+ const other=simulateLatheStock(secondTool,twoTools,'example-insert',undefined,false,{}, {},undefined,{'1':{xExtent:1,zNear:1,zFar:2}}),selected=simulateLatheStock(secondTool,twoTools,'example-insert',undefined,false,{}, {},undefined,{'2':{xExtent:1,zNear:1,zFar:2}});
+ if(!other.ok||!selected.ok)throw new Error('tool-specific simulation did not finish');expect(other.remaining).toEqual(insert.remaining);expect(selected.remaining).toEqual(narrow.remaining);
  expect(simulateLatheStock(parsed,options,'example-insert',undefined,false,{}, {},{xExtent:1,zNear:2,zFar:1})).toMatchObject({ok:false,message:expect.stringContaining('인서트 단면')});
  const wrongOrientation={...options,linuxcncLatheToolReference:{tools:{'1':{diameter:.4,orientation:3,offsetX:0,offsetZ:0}}}};
  expect(simulateLatheStock(parsed,wrongOrientation,'example-insert')).toMatchObject({ok:false,message:expect.stringContaining('방향 2')});

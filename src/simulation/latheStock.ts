@@ -40,6 +40,7 @@ function sweptPolygon(a:Point,b:Point,local:Point[]):Point[]{
  for(const p of [...points].reverse()){while(upper.length>=2&&cross(upper[upper.length-2],upper[upper.length-1],p)<=0)upper.pop();upper.push(p);}
  lower.pop();upper.pop();return lower.concat(upper);
 }
+const validInsert=(s:LatheInsertShape)=>[s.xExtent,s.zNear,s.zFar].every(Number.isFinite)&&s.xExtent>0&&s.xExtent<=20&&s.zNear>=0&&s.zFar>s.zNear&&s.zFar<=20;
 function sweptInsert(a:Point,b:Point,radius:number,shape:LatheInsertShape):Point[]{return sweptPolygon(a,b,[{x:-radius,z:0},{x:0,z:-radius},{x:shape.xExtent,z:shape.zNear},{x:shape.xExtent,z:shape.zFar}]);}
 function insideConvex(point:Point,polygon:Point[]):boolean{
  for(let i=0;i<polygon.length;i++){const a=polygon[i],b=polygon[(i+1)%polygon.length];if((b.x-a.x)*(point.z-a.z)-(b.z-a.z)*(point.x-a.x)<-1e-12)return false;}
@@ -48,8 +49,8 @@ function insideConvex(point:Point,polygon:Point[]):boolean{
 /** Approximate example stock. Threading uses a symmetric insert section and
  * fixed phase during rapid motions; real acceleration, holder geometry,
  * machine limits and nonzero offsets are not modelled. */
-export function simulateLatheStock(result:ParseResult,options:ParserOptions,model:LatheInsertModel='round-nose',grid:LatheStockGrid=LATHE_STOCK,allowPartial=false,partingTools:Record<string,PartingToolShape>={},threadingTools:Record<string,ThreadingToolShape>={},insertShape:LatheInsertShape=DEFAULT_LATHE_INSERT):LatheStockResult{
- if(model==='example-insert'&&(![insertShape.xExtent,insertShape.zNear,insertShape.zFar].every(Number.isFinite)||insertShape.xExtent<=0||insertShape.xExtent>20||insertShape.zNear<0||insertShape.zFar<=insertShape.zNear||insertShape.zFar>20))return {ok:false,message:'인서트 단면 X 길이와 Z 범위를 확인해 주세요.'};
+export function simulateLatheStock(result:ParseResult,options:ParserOptions,model:LatheInsertModel='round-nose',grid:LatheStockGrid=LATHE_STOCK,allowPartial=false,partingTools:Record<string,PartingToolShape>={},threadingTools:Record<string,ThreadingToolShape>={},insertShape:LatheInsertShape=DEFAULT_LATHE_INSERT,insertOverrides:Record<string,LatheInsertShape>={}):LatheStockResult{
+ if(model==='example-insert'&&!validInsert(insertShape))return {ok:false,message:'인서트 단면 X 길이와 Z 범위를 확인해 주세요.'};
  const table=options.linuxcncLatheToolReference?.tools;
  if(!table)return {ok:false,message:'선반 예제 공구표를 선택해 NC를 다시 해석해 주세요.'};
  const partial=allowPartial&&result.status==='PARTIAL'&&result.warnings.length===1&&(result.warnings[0].code==='ENTRY_TOO_SHORT'||(options.linuxcncPawnContourReference===true&&result.warnings[0].code==='CONCAVE_GOUGING'));
@@ -67,7 +68,8 @@ export function simulateLatheStock(result:ParseResult,options:ParserOptions,mode
   if(!finite(segment.start)||!finite(segment.end)||segment.start.y!==0||segment.end.y!==0||segment.plane!=='XZ')return {ok:false,message:'X/Z 평면의 완전히 알려진 경로만 계산합니다.',sourceLine:segment.sourceLine};
   const tool=segment.tool===undefined?undefined:table[String(segment.tool)];
   if(!tool||!Number.isFinite(tool.diameter)||tool.diameter<=0||!Number.isInteger(tool.orientation)||tool.orientation<0||tool.orientation>9||tool.offsetX!==0||tool.offsetZ!==0)return {ok:false,message:'각 이동에 길이 0인 예제 공구표 항목이 필요합니다.',sourceLine:segment.sourceLine};
-  const blade=partingTools[String(segment.tool)],threadTool=threadingTools[String(segment.tool)];
+  const blade=partingTools[String(segment.tool)],threadTool=threadingTools[String(segment.tool)],currentInsert=insertOverrides[String(segment.tool)]??insertShape;
+  if(model==='example-insert'&&!blade&&!threadTool&&!validInsert(currentInsert))return {ok:false,message:'공구별 인서트 단면 X 길이와 Z 범위를 확인해 주세요.',sourceLine:segment.sourceLine};
   if(blade&&(!Number.isFinite(blade.width)||!Number.isFinite(blade.length)||blade.width<=0||blade.width>10||blade.length<=0||blade.length>20))return {ok:false,message:'절단 공구 폭과 길이를 확인해 주세요.',sourceLine:segment.sourceLine};
   if(threadTool&&(!Number.isFinite(threadTool.length)||threadTool.length<=0||threadTool.length>20||!Number.isFinite(threadTool.includedAngleDegrees??60)||(threadTool.includedAngleDegrees??60)<10||(threadTool.includedAngleDegrees??60)>160||!Number.isFinite(threadTool.tipRadius??0)||(threadTool.tipRadius??0)<0||(threadTool.tipRadius??0)>threadTool.length||blade))return {ok:false,message:'나사 공구 길이, 날 각도(10~160도)와 끝 반경을 확인해 주세요.',sourceLine:segment.sourceLine};
   if(model==='example-insert'&&!blade&&!threadTool&&tool.orientation!==2)return {ok:false,message:'예제 인서트 단면은 방향 2인 공구에만 적용할 수 있습니다.',sourceLine:segment.sourceLine};
@@ -120,7 +122,7 @@ export function simulateLatheStock(result:ParseResult,options:ParserOptions,mode
   const radius=tool.diameter/2,shift=blade||threadTool?{x:0,z:0}:latheNoseOriginOffset(tool.orientation,radius),points:Point[]=[];
   if(segment.vertices){for(let i=0;i<segment.vertices.length;i+=3){if(segment.vertices[i+1]!==0)return {ok:false,message:'Y축이 포함된 선반 경로는 지원하지 않습니다.',sourceLine:segment.sourceLine};points.push({x:segment.vertices[i]-shift.x,z:segment.vertices[i+2]-shift.z});}}
   else points.push({x:segment.start.x!-shift.x,z:segment.start.z!-shift.z},{x:segment.end.x!-shift.x,z:segment.end.z!-shift.z});
-  for(let i=1;i<points.length;i++){const polygon=blade?sweptPolygon(points[i-1],points[i],[{x:0,z:-blade.width/2},{x:blade.length,z:-blade.width/2},{x:blade.length,z:blade.width/2},{x:0,z:blade.width/2}]):!threadTool&&model==='example-insert'?sweptInsert(points[i-1],points[i],radius,insertShape):[];
+  for(let i=1;i<points.length;i++){const polygon=blade?sweptPolygon(points[i-1],points[i],[{x:0,z:-blade.width/2},{x:blade.length,z:-blade.width/2},{x:blade.length,z:blade.width/2},{x:0,z:blade.width/2}]):!threadTool&&model==='example-insert'?sweptInsert(points[i-1],points[i],radius,currentInsert):[];
    let r0=0,r1=nr-1,z0=0,z1=nz-1;
    if(!blade&&!threadTool&&radius>=1e-4){
     // Conservative X/Z bounds for the swept round nose and insert. Both
