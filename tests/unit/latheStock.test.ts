@@ -266,3 +266,37 @@ it('does not flag a holder following material already cleared by the cutter',()=
  expect(trailing.remaining).toEqual(plain.remaining);expect(trailing.holderContacts).toBeUndefined();
  expect(leading.holderContacts?.some(c=>c.motion==='G01')).toBe(true);
 });
+it('compares synchronized holder arrival with earlier cutting at each spindle phase',()=>{
+ const setup={...options,initialPosition:{x:12,y:0,z:1}};
+ const parsed=parseGcode('G21 G90 G18 G8\nT1 M6\nG0 X12 Z0\nS500 M3\nG0 X11\nG76 P1.2 Z-5.5 I-1 J.2 K1 R1\nM2',setup),template=parsed.segments.find(s=>s.thread?.kind==='thread-cut')!;
+ const segment={...template,start:{x:4,y:0,z:-2.9},end:{x:0,y:0,z:-2.9},thread:{...template.thread!,phaseTurnsStart:0,phaseTurnsEnd:20,pitch:1.2}};
+ const grid={radius:4,zMin:-5,zMax:0,step:.2,radialCells:20,axialCells:25,angularSegments:12},one={...parsed,segments:[segment]};
+ const plain=simulateLatheStock(one,setup,'round-nose',grid,false,{}, {'1':{length:1}});
+ const trailing=simulateLatheStock(one,setup,'round-nose',grid,false,{}, {'1':{length:1}},undefined,{}, {xMin:1.5,xMax:2,zMin:-.12,zMax:.12});
+ const leading=simulateLatheStock(one,setup,'round-nose',grid,false,{}, {'1':{length:1}},undefined,{}, {xMin:-1,xMax:-.5,zMin:-.12,zMax:.12});
+ if(!plain.ok||!trailing.ok||!leading.ok)throw new Error('thread holder example did not finish');
+ expect(trailing.remaining).toEqual(plain.remaining);expect(trailing.holderContacts).toBeUndefined();
+ expect(leading.holderContacts?.some(c=>c.motion==='G01')).toBe(true);
+});
+it('agrees with exhaustive discrete spindle events for synchronized holder overlap',()=>{
+ const setup={...options,initialPosition:{x:12,y:0,z:1}},parsed=parseGcode('G21 G90 G18 G8\nT1 M6\nG0 X12 Z0\nS500 M3\nG0 X11\nG76 P1.2 Z-5.5 I-1 J.2 K1 R1\nM2',setup),template=parsed.segments.find(s=>s.thread?.kind==='thread-cut')!;
+ const grid={radius:4,zMin:-5,zMax:0,step:.25,radialCells:16,axialCells:20,angularSegments:12};
+ let seed=192837;const random=()=>{seed=(1664525*seed+1013904223)>>>0;return seed/2**32;};
+ for(let sample=0;sample<18;sample++){
+  const a={x:random()*4,y:0,z:-4+random()*3},b={x:random()*4,y:0,z:-4+random()*3},tip=sample%2?.2:0,direction=sample%3===0?-1:1;
+  const xMin=-2+random()*3,zMin=-1+random()*1.5,holder={xMin,xMax:xMin+.4+random(),zMin,zMax:zMin+.3+random()};
+  const segment={...template,start:a,end:b,thread:{...template.thread!,phaseTurnsStart:.13,phaseTurnsEnd:12.13,pitch:1.2,spindleDirection:direction as 1|-1}};
+  const shape=simulateLatheStock({...parsed,segments:[segment]},setup,'round-nose',grid,false,{}, {'1':{length:1,tipRadius:tip}},undefined,{},holder);if(!shape.ok)throw new Error(shape.message);
+  let expected=false;
+  for(let angle=0;angle<grid.angularSegments&&!expected;angle++)for(let z=0;z<grid.axialCells&&!expected;z++)for(let r=0;r<grid.radialCells&&!expected;r++){
+   const x=(r+.5)*grid.step,pz=grid.zMin+(z+.5)*grid.step,phase=-direction*(angle+.5)/grid.angularSegments,tolerance=1/(2*grid.angularSegments),events:{turn:number;side:number}[]=[];
+   for(const side of [1,-1])for(let k=-2;k<=15;k++){const turn=phase+(side===1?0:-direction*.5)+k;if(turn>=.13-tolerance-1e-12&&turn<=12.13+tolerance+1e-12)events.push({turn,side});}
+   events.sort((u,v)=>u.turn-v.turn);let present=true;
+   for(const event of events){const q=Math.max(0,Math.min(1,(event.turn-.13)/12)),tx=a.x+(b.x-a.x)*q,tz=a.z+(b.z-a.z)*q,dx=event.side*x-tx,dz=pz-tz;
+    if(present&&dx>=holder.xMin&&dx<=holder.xMax&&dz>=holder.zMin&&dz<=holder.zMax){expected=true;break;}
+    if(event.side===1&&dx>=0&&dx<=1){const tangent=tip*(1-Math.sin(Math.PI/6)),width=tip>0&&dx<tangent?Math.sqrt(Math.max(0,2*tip*dx-dx*dx)):(dx+(tip?tip*(1/Math.sin(Math.PI/6)-1):0))*Math.tan(Math.PI/6);if(Math.abs(dz)<=width)present=false;}
+   }
+  }
+  expect(Boolean(shape.holderContacts?.length),`sample ${sample}`).toBe(expected);
+ }
+});

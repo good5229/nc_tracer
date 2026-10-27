@@ -1,6 +1,6 @@
 import type {MotionSegment,ParseResult,ParserOptions} from '../parser/gcode';
 import type {StockComponent} from './stockComponents';
-import {threadHalfWidth,sweptThreadToolContains} from './threadToolGeometry';
+import {threadHalfWidth,sweptThreadToolContains,threadToolIntervals,movingBoxInterval} from './threadToolGeometry';
 import {latheNoseOriginOffset} from '../parser/linuxcncLatheNose';
 
 /** Example stock in mm, with an axis along Z and uniform 0.2 mm cells. */
@@ -71,7 +71,7 @@ export function simulateLatheStock(result:ParseResult,options:ParserOptions,mode
  // Conservative swept section against the stock before each linear piece.
  // During a cut, some of this material may be removed before the holder
  // arrives; report a possibility, not a confirmed physical collision.
- const scanHolder=(a:Point,b:Point,segment:MotionSegment):boolean=>{
+ const scanHolder=(a:Point,b:Point,segment:MotionSegment,sync?:{start:number;end:number;direction:number;length:number;halfAngle:number;tipRadius:number}):boolean=>{
   if(!holder||holderContacts.some(c=>c.sourceLine===segment.sourceLine&&c.tool===segment.tool&&c.motion===segment.motion))return true;
   const polygon=sweptPolygon(a,b,[{x:holder.xMin,z:holder.zMin},{x:holder.xMax,z:holder.zMin},{x:holder.xMax,z:holder.zMax},{x:holder.xMin,z:holder.zMax}]);
   const eps=1e-7,minX=Math.min(...polygon.map(p=>p.x))-eps,maxX=Math.max(...polygon.map(p=>p.x))+eps,minZ=Math.min(...polygon.map(p=>p.z))-eps,maxZ=Math.max(...polygon.map(p=>p.z))+eps;
@@ -81,8 +81,24 @@ export function simulateLatheStock(result:ParseResult,options:ParserOptions,mode
   for(let z=z0;z<=z1;z++)for(let r=r0;r<=r1;r++){
    const x=(r+.5)*step,pz=zMin+(z+.5)*step;
    if(!insideConvex({x,z:pz},polygon)&&!insideConvex({x:-x,z:pz},polygon))continue;
-   work+=angular;if(work>120_000_000)return false;
+   work+=angular*(sync?16:1);if(work>120_000_000)return false;
+   const plusInterval=sync?movingBoxInterval({x,z:pz},a,b,{xMin:holder.xMin-1e-10,xMax:holder.xMax+1e-10,zMin:holder.zMin-1e-10,zMax:holder.zMax+1e-10}):null;
+   const minusInterval=sync?movingBoxInterval({x:-x,z:pz},a,b,{xMin:holder.xMin-1e-10,xMax:holder.xMax+1e-10,zMin:holder.zMin-1e-10,zMax:holder.zMax+1e-10}):null;
+   const cuttingIntervals=sync?threadToolIntervals({x,z:pz},a,b,sync.length,sync.halfAngle,sync.tipRadius):[];
    for(let angle=0;angle<angular;angle++)if(remaining[index(r,z,angle)]){
+    if(sync){
+     const span=sync.end-sync.start,tolerance=1/(2*angular),phase=-sync.direction*(angle+.5)/angular;
+     const earliest=(interval:[number,number]|null,atPhase:number)=>{
+      if(!interval)return Infinity;
+      const low=sync.start+interval[0]*span-(interval[0]===0?tolerance:0),high=sync.start+interval[1]*span+(interval[1]===1?tolerance:0);
+      const time=atPhase+Math.ceil(low-atPhase-1e-12);
+      return time<=high+1e-12?Math.max(sync.start,Math.min(sync.end,time)):Infinity;
+     };
+     const hit=Math.min(earliest(plusInterval,phase),earliest(minusInterval,phase-sync.direction*.5));
+     if(!Number.isFinite(hit))continue;
+     const cut=Math.min(...cuttingIntervals.map(interval=>earliest(interval,phase)));
+     if(cut<hit-1e-10)continue;
+    }
     if(holderContacts.length>=1000)return false;
     holderContacts.push({sourceLine:segment.sourceLine,tool:segment.tool!,motion:segment.motion,radius:x,z:pz});return true;
    }
@@ -105,10 +121,10 @@ export function simulateLatheStock(result:ParseResult,options:ParserOptions,mode
    if(!t.external || ![t.pitch,t.phaseTurnsStart,t.phaseTurnsEnd].every(Number.isFinite) || t.pitch<step*2 || t.indexOffsetDegrees!==0 || ![1,-1].includes(t.spindleDirection) || segment.start.x!<0 || segment.end.x!<0 || (t.synchronized&&segment.motion!=='G01'))return {ok:false,message:'예제 나사 계산은 외경 나사, 0.4mm 이상 피치와 기준 위상 0인 경우만 지원합니다.',sourceLine:segment.sourceLine};
    work+=nr*nz*angular;if(work>120_000_000)return {ok:false,message:'선반 형상 계산 범위를 초과했습니다.'};
    const halfAngle=(threadTool?.includedAngleDegrees??60)*Math.PI/360,tipRadius=threadTool?.tipRadius??0,length=threadTool?.length??2,a={x:segment.start.x!,z:segment.start.z!},b={x:segment.end.x!,z:segment.end.z!};
-   if(!scanHolder(a,b,segment))return {ok:false,message:'홀더 간섭 계산 범위를 초과했습니다.',sourceLine:segment.sourceLine};
    if(t.synchronized){
     const dz=b.z-a.z,turnSpan=t.phaseTurnsEnd-t.phaseTurnsStart;
     if(!(turnSpan>0)||!Number.isFinite(turnSpan))return {ok:false,message:'동기화된 나사 이동의 회전량을 확인할 수 없습니다.',sourceLine:segment.sourceLine};
+    if(!scanHolder(a,b,segment,{start:t.phaseTurnsStart,end:t.phaseTurnsEnd,direction:t.spindleDirection,length,halfAngle,tipRadius}))return {ok:false,message:'홀더 간섭 계산 범위를 초과했습니다.',sourceLine:segment.sourceLine};
     const phaseTolerance=1/(2*angular),lo=t.phaseTurnsStart-phaseTolerance,hi=t.phaseTurnsEnd+phaseTolerance;
     for(let angle=0;angle<angular;angle++){
      const phase=-t.spindleDirection*(angle+.5)/angular,kMin=Math.ceil(lo-phase-1e-12),kMax=Math.floor(hi-phase+1e-12);
@@ -132,6 +148,7 @@ export function simulateLatheStock(result:ParseResult,options:ParserOptions,mode
      }
     }
    }else{
+    if(!scanHolder(a,b,segment))return {ok:false,message:'홀더 간섭 계산 범위를 초과했습니다.',sourceLine:segment.sourceLine};
     // The ideal preview freezes spindle phase during unsynchronised rapids.
     // Real spindle rotation during these moves is machine-dependent.
     const fraction=((-t.spindleDirection*t.phaseTurnsStart)%1+1)%1;

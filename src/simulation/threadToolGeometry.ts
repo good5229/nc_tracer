@@ -29,3 +29,32 @@ export function sweptThreadToolContains(point:ThreadSectionPoint,a:ThreadSection
  const x=d0+dd*q-tipRadius,z=h0+dh*q;
  return x*x+z*z<=tipRadius*tipRadius+1e-12;
 }
+
+/** Parameter intervals where a moving thread section contains a fixed point. */
+export function threadToolIntervals(point:ThreadSectionPoint,a:ThreadSectionPoint,b:ThreadSectionPoint,length:number,halfAngle:number,tipRadius:number):[number,number][]{
+ const d=point.x-a.x,dd=a.x-b.x,h=point.z-a.z,dh=a.z-b.z,tan=Math.tan(halfAngle);
+ const tangent=tipRadius*(1-Math.sin(halfAngle)),offset=tipRadius===0?0:tipRadius*(1/Math.sin(halfAngle)-1);
+ const clip=(constraints:[number,number][]):[number,number]|null=>{
+  let lo=0,hi=1;for(const [v,s] of constraints){if(s===0){if(v<0)return null;}else if(s>0)lo=Math.max(lo,-v/s);else hi=Math.min(hi,-v/s);if(lo>hi)return null;}return [lo,hi];
+ };
+ const intervals:[number,number][]=[],flank=clip([[d-tangent,dd],[length-d,-dd],[(d+offset)*tan-h,dd*tan-dh],[(d+offset)*tan+h,dd*tan+dh]]);
+ if(flank)intervals.push(flank);
+ if(tipRadius>0){
+  const nose=clip([[d,dd],[tangent-d,-dd]]);
+  if(nose){const aa=dd*dd+dh*dh,bb=2*((d-tipRadius)*dd+h*dh),cc=(d-tipRadius)**2+h*h-tipRadius*tipRadius;
+   if(aa===0){if(cc<=0)intervals.push(nose);}else{const disc=bb*bb-4*aa*cc;if(disc>=0){const root=Math.sqrt(disc),lo=Math.max(nose[0],(-bb-root)/(2*aa)),hi=Math.min(nose[1],(-bb+root)/(2*aa));if(lo<=hi)intervals.push([lo,hi]);}}
+  }
+ }
+ return intervals;
+}
+
+/** Parameter interval where a moving axis-aligned X/Z rectangle contains a point. */
+export function movingBoxInterval(point:ThreadSectionPoint,a:ThreadSectionPoint,b:ThreadSectionPoint,box:{xMin:number;xMax:number;zMin:number;zMax:number}):[number,number]|null{
+ const d=point.x-a.x,dd=a.x-b.x,h=point.z-a.z,dh=a.z-b.z;
+ let lo=0,hi=1;
+ for(const [v,s] of [[d-box.xMin,dd],[box.xMax-d,-dd],[h-box.zMin,dh],[box.zMax-h,-dh]]){
+  if(s===0){if(v<0)return null;}else if(s>0)lo=Math.max(lo,-v/s);else hi=Math.min(hi,-v/s);
+  if(lo>hi)return null;
+ }
+ return [lo,hi];
+}
