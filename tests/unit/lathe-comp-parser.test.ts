@@ -45,6 +45,12 @@ it.each([
  const result=parseGcode(source,settings);expect(result.warnings).toEqual([]);expect(result.status).toBe('SUPPORTED');
  expect(result.segments).toHaveLength(expected.length);result.segments.forEach((segment,i)=>{expect(segment.motion).toBe(expected[i][0]);expect(segment.end.x).toBeCloseTo(expected[i][1],4);expect(segment.end.z).toBeCloseTo(expected[i][2],4);});
 });
+it('interprets the concave arc-to-arc reference',()=>{
+ const source=readFileSync(new URL('../fixtures/lathe_comp_arc_arc_concave.ngc',import.meta.url),'utf8');
+ const result=parseGcode(source,settings);expect(result.warnings).toEqual([]);expect(result.status).toBe('SUPPORTED');
+ const expected=[['G00',10,1],['G01',3.8,1],['G02',3.6,.8],['G01',3.6,-.2],['G02',5.7506,-2.3994],['G03',6.6211,-5.1106],['G02',6.8,-5.4],['G01',8.8,-5.4],['G00',11,-5]] as const;
+ expect(result.segments).toHaveLength(expected.length);result.segments.forEach((segment,i)=>{expect(segment.motion).toBe(expected[i][0]);expect(segment.end.x).toBeCloseTo(expected[i][1],4);expect(segment.end.z).toBeCloseTo(expected[i][2],4);});
+});
 it('uses the explicitly loaded tool table for G41 and rejects unknown offsets',()=>{
  const source=readFileSync(new URL('../fixtures/lathe_comp_left.ngc',import.meta.url),'utf8').replace('G41.1 D0.4 L2','T11 M6\nG43\nG41');
  const table={...settings,linuxcncLatheToolReference:{tools:{'11':{diameter:.4,orientation:2,offsetX:0,offsetZ:0}}}};
