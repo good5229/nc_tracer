@@ -185,7 +185,12 @@ export function parseGcode(text: string, options: ParserOptions = {}): ParseResu
     if (rawCode.trim() === '%') continue;
     let tokens: ReturnType<typeof tokenize>;
     try {
-      tokens = tokenize(stripComments(rawCode));
+      const code = stripComments(rawCode);
+      if (['#', '[', ']'].some(character => code.includes(character)) || /\bO\s*</i.test(code) || /\b(?:IF|WHILE|GOTO|ENDWHILE)\b/i.test(code)) {
+        warn(sourceLine, 'UNSUPPORTED_MACRO', 'Macro or subroutine syntax is unsupported; interpretation stopped here');
+        status = segments.length ? 'PARTIAL' : 'UNSUPPORTED'; stopped = true; break;
+      }
+      tokens = tokenize(code);
     } catch (error) {
       warn(sourceLine, 'LEXICAL_ERROR', error instanceof Error ? error.message : 'Invalid block');
       status = 'INVALID'; stopped = true; break;

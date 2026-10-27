@@ -109,6 +109,17 @@ describe('parseGcode', () => {
     expect(result.segments[0].rawCode).toBe('G01 X1 Y2 Z3 (cut)');
   });
 
+  it('identifies macro and subroutine syntax as unsupported without interpreting later code', () => {
+    for (const code of ['#1=10', 'G01 X[#1]', 'O<increment> sub']) {
+      const result = parseGcode(`G21 G90 G01 X1\n${code}\nG01 X20`, { initialPosition: origin });
+      expect(result.status).toBe('PARTIAL');
+      expect(result.segments).toHaveLength(1);
+      expect(result.warnings[0]).toMatchObject({sourceLine: 2, code: 'UNSUPPORTED_MACRO'});
+    }
+    expect(parseGcode('O<increment> sub').status).toBe('UNSUPPORTED');
+    expect(parseGcode('G21 (comment #1) G90 G01 X1', {initialPosition:origin}).status).toBe('SUPPORTED');
+  });
+
   it('stops at unsupported commands and preserves only earlier verified segments', () => {
     const result = parseGcode('G21 G90 G00 X0 Y0 Z0\nG01 X1 Y1 Z1\nG02 X2 Y2 I1 J0\nG01 X3 Y3 Z3', { initialPosition: origin });
     // Arc words without an explicit plane are outside the verified profile.
