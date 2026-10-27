@@ -53,14 +53,17 @@ export function linuxCncLatheNoseLines(start:LatheNosePoint,lines:LatheInputMove
  const radius=diameter/2, shift=latheNoseOriginOffset(orientation,radius),toolPoint=(point:LatheNosePoint)=>plus(point,shift);
  const moves:LatheCompMove[]=[{start:{...start},end:first.toolOrigin,motion:lines[0].motion,sourceLine:lines[0].sourceLine}];
  let programStart={...start},programPoint={...lines[0].end},center={...first.center};
- let previousArc=false,previousTangent:LatheNosePoint|undefined,bypassed=false,queuedOriginalStart:LatheNosePoint|undefined,queuedFirst=false;
+ let previousArc=false,previousTangent:LatheNosePoint|undefined,bypassed=false,queuedOriginalStart:LatheNosePoint|undefined,queuedFirst=false,queuedArc:LatheCompMove|undefined;
  for(let i=1;i<lines.length;i++){
   const line=lines[i],a=previousTangent??sub(programPoint,programStart),isArc=line.motion==='G02'||line.motion==='G03';
   if(line.motion==='G00_BYPASS'){
    queuedFirst=moves.length===1;const queued=moves.pop();
    if(bypassed||!queued)return error('UNSUPPORTED_COMP_G70_QUEUE',line.sourceLine);
-   if(queued.center||queued.motion==='G02'||queued.motion==='G03')return {ok:false,code:'UNSUPPORTED_COMP_G70_ARC_QUEUE',sourceLine:line.sourceLine,committed:[...moves,{start:queued.start,end:{...line.end},motion:'G00',sourceLine:line.sourceLine}]};
-   queuedOriginalStart={...queued.start};moves.push({start:queued.start,end:{...line.end},motion:'G00',sourceLine:line.sourceLine},{...queued,start:{...line.end}});
+   if(queued.center||queued.motion==='G02'||queued.motion==='G03'){
+    if(!queued.center||Math.hypot(queued.start.x-line.end.x,queued.start.z-line.end.z)>1e-12)return {ok:false,code:'UNSUPPORTED_COMP_G70_ARC_QUEUE',sourceLine:line.sourceLine,committed:[...moves,{start:queued.start,end:{...line.end},motion:'G00',sourceLine:line.sourceLine}]};
+    queuedArc=queued;moves.push(queued);
+   }else moves.push({start:queued.start,end:{...line.end},motion:'G00',sourceLine:line.sourceLine},{...queued,start:{...line.end}});
+   queuedOriginalStart={...queued.start};
    center={...line.end};bypassed=true;continue;
   }
   if(bypassed){
@@ -73,6 +76,23 @@ export function linuxCncLatheNoseLines(start:LatheNosePoint,lines:LatheInputMove
    const beta=(side==='left'?adjustedTheta-alpha:alpha-adjustedTheta)-Math.PI/2,gamma=side==='left'?Math.PI/2:-Math.PI/2;
    if(!Number.isFinite(beta))return error('UNSUPPORTED_COMP_G70_QUEUE',line.sourceLine);
    const pending=moves[moves.length-1],programDirection=sub(programPoint,programStart);
+   if(queuedArc){
+    const arcQueueError=(code:string):LatheCompLines=>({ok:false,code,sourceLine:line.sourceLine,committed:moves.slice(0,-1)});
+    if(!(beta < -0.01 || beta > Math.PI+0.01))return arcQueueError('UNSUPPORTED_COMP_G70_ARC_QUEUE');
+    const previousCenter=sub(queuedArc.center!,shift),oldRadius=Math.hypot(queuedArc.end.x-queuedArc.center!.x,queuedArc.end.z-queuedArc.center!.z),ccw=queuedArc.motion==='G03';
+    const inside=(side==='left'&&ccw)||(side==='right'&&!ccw),uncompensatedRadius=inside?oldRadius+radius:oldRadius-radius;
+    const base=Math.atan2(line.end.x-programPoint.x,line.end.z-programPoint.z),arcTheta=base+(ccw?Math.PI/2:-Math.PI/2),phi=Math.atan2(previousCenter.x-programPoint.x,previousCenter.z-programPoint.z);
+    const distance=uncompensatedRadius*Math.cos(arcTheta-phi)+(inside?-radius:radius),ratio=distance/oldRadius;
+    if(!(oldRadius>0)||!Number.isFinite(ratio)||Math.abs(ratio)>1)return arcQueueError('CONCAVE_GOUGING');
+    const angle=arcTheta+Math.PI+(inside?(ccw?-1:1):(ccw?1:-1))*Math.acos(ratio),mid={z:previousCenter.z+oldRadius*Math.cos(angle),x:previousCenter.x+oldRadius*Math.sin(angle)};
+    const angleOf=(point:LatheNosePoint)=>Math.atan2(point.x-queuedArc!.center!.x,point.z-queuedArc!.center!.z),startAngle=angleOf(queuedArc.start),oldAngle=angleOf(queuedArc.end),newAngle=angleOf(toolPoint(mid));
+    const sweep=(end:number)=>((ccw?end-startAngle:startAngle-end)%(2*Math.PI)+2*Math.PI)%(2*Math.PI);
+    if(sweep(newAngle)>sweep(oldAngle)+.0254)return arcQueueError('CONCAVE_GOUGING');
+    pending.end=toolPoint(mid);
+    const nextEnd={z:line.end.z+radius*Math.cos(alpha+gamma),x:line.end.x+radius*Math.sin(alpha+gamma)};
+    moves.push({start:pending.end,end:toolPoint(nextEnd),motion:line.motion,sourceLine:line.sourceLine});
+    center=nextEnd;programStart=programPoint;programPoint={...line.end};previousArc=false;previousTangent=undefined;bypassed=false;queuedOriginalStart=undefined;queuedArc=undefined;continue;
+   }
    // LinuxCNC records the *normal* as the queued first entry's direction;
    // subsequent queued straight moves use their programmed direction.
    const entryAngle=Math.atan2(programDirection.x,programDirection.z)+(side==='left'?Math.PI/2:-Math.PI/2);

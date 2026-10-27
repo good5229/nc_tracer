@@ -4,6 +4,7 @@ import {parseGcode} from '../../src/parser/gcode';
 import reference from '../fixtures/linuxcnc-lathe-comp-reference.json';
 import priorDirections from '../fixtures/linuxcnc-g70-prior-directions.json';
 import twoMoves from '../fixtures/linuxcnc-g70-two-moves.json';
+import arcAnchor from '../fixtures/linuxcnc-g70-arc-anchor.json';
 const settings={controllerProfile:'linuxcnc' as const,linuxcncLatheToolReference:{tools:{}},initialPosition:{x:0,y:0,z:0},initialDistanceMode:'absolute' as const};
 describe('LinuxCNC explicit lathe compensation profile',()=>{
  for(const name of ['lathe_comp_left','lathe_comp_right','lathe_comp_arc'] as const)it(`matches ${name}`,()=>{
@@ -179,4 +180,19 @@ it.each(['left_ccw','left_cw','right_ccw','right_cw'] as const)('preserves the v
  const result=parseGcode(source,table);expect(result.status).toBe('PARTIAL');expect(result.warnings.at(-1)?.code).toBe('UNSUPPORTED_COMP_G70_ARC_QUEUE');
  const expected=[['G00',10,3],['G01',name.startsWith('left')?9.6:10,1.8],['G00',10,1]] as const;
  expect(result.segments).toHaveLength(expected.length);result.segments.forEach((segment,i)=>{expect(segment.motion).toBe(expected[i][0]);expect(segment.end.x).toBeCloseTo(expected[i][1],4);expect(segment.end.z).toBeCloseTo(expected[i][2],4);if(i)expect(segment.start).toEqual(result.segments[i-1].end);});
+});
+
+it('matches LinuxCNC G70 when the compensated arc begins at the cycle anchor',()=>{
+ const source=readFileSync(new URL('../fixtures/g70_comp_arc_anchor_left_cw.ngc',import.meta.url),'utf8');
+ const table={...settings,linuxcncLatheToolReference:{tools:{'1':{diameter:.4,orientation:2,offsetX:0,offsetZ:0}}}};
+ const result=parseGcode(source,table);expect(result.status).toBe('SUPPORTED');expect(result.warnings).toEqual([]);expect(result.segments).toHaveLength(arcAnchor.length);
+ result.segments.forEach((segment,i)=>{expect(segment.motion,`motion ${i}`).toBe(arcAnchor[i].motion);expect(segment.end.x,`X ${i}`).toBeCloseTo(arcAnchor[i].end[0],4);expect(segment.end.z,`Z ${i}`).toBeCloseTo(arcAnchor[i].end[1],4);if(i)expect(segment.start).toEqual(result.segments[i-1].end);
+  const center=arcAnchor[i].center;if(center){const vertices=segment.vertices!;expect(vertices).toBeDefined();const r=Math.hypot(segment.start.x!-center[0],segment.start.z!-center[1]);for(let n=0;n<vertices.length;n+=3)expect(Math.abs(Math.hypot(vertices[n]-center[0],vertices[n+2]-center[1])-r)).toBeLessThan(.0002);}
+ });
+});
+it.each([['left_ccw','UNSUPPORTED_COMP_G70_ARC_QUEUE'],['right_ccw','UNSUPPORTED_COMP_G70_ARC_QUEUE'],['right_cw','CONCAVE_GOUGING']] as const)('stops safely for the anchored arc reference %s',(name,code)=>{
+ const source=readFileSync(new URL(`../fixtures/g70_comp_arc_anchor_${name}.ngc`,import.meta.url),'utf8');
+ const table={...settings,linuxcncLatheToolReference:{tools:{'1':{diameter:.4,orientation:2,offsetX:0,offsetZ:0}}}};
+ const result=parseGcode(source,table);expect(result.status).toBe('PARTIAL');expect(result.warnings.at(-1)?.code).toBe(code);
+ expect(result.segments).toHaveLength(2);expect(result.segments[1].end.x).toBeCloseTo(name.startsWith('left')?9.6:10,4);expect(result.segments[1].end.z).toBeCloseTo(1.8,4);
 });
