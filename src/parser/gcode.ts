@@ -54,6 +54,8 @@ const planeAxes: Record<NonNullable<ModalState['plane']>, PlaneAxes> = {
 const TAU = Math.PI * 2;
 const ARC_MAX_SAGITTA_MM = 0.01;
 const ARC_MAX_SEGMENTS = 100_000;
+const ARC_MAX_TOTAL_VERTICES = 1_000_000;
+const FLOAT32_MAX_OFFSET_MM = 0.01;
 const normalizeAngle = (angle: number) => ((angle % TAU) + TAU) % TAU;
 
 function solveArc(start: Vector3, end: Vector3, plane: NonNullable<ModalState['plane']>, clockwise: boolean,
@@ -96,7 +98,15 @@ function solveArc(start: Vector3, end: Vector3, plane: NonNullable<ModalState['p
 
 const unknownPosition = (): Vector3 => ({ x: null, y: null, z: null });
 const finitePosition = (p: Vector3) => [p.x, p.y, p.z].every((v) => v !== null && Number.isFinite(v));
-const renderablePosition = (p: Vector3) => finitePosition(p) && [p.x, p.y, p.z].every((v) => Number.isFinite(Math.fround(v!)));
+const float32Offset = (p: Vector3) => {
+  const deltas = [p.x, p.y, p.z].map((v) =>
+    v === null ? 0 : Number.isFinite(v) && Number.isFinite(Math.fround(v)) ? Math.fround(v) - v : Infinity,
+  );
+  return Math.hypot(...deltas);
+};
+const renderablePosition = (p: Vector3) => finitePosition(p) && float32Offset(p) <= FLOAT32_MAX_OFFSET_MM;
+const precisionLossMessage = (offset: number) =>
+  `Float32 conversion changes the 3D position by ${offset} mm, exceeding the ${FLOAT32_MAX_OFFSET_MM} mm Euclidean tolerance`;
 
 function stripComments(line: string): string {
   let out = '';
@@ -161,7 +171,14 @@ export function parseGcode(text: string, options: ParserOptions = {}): ParseResu
     state.position = unknownPosition();
     return { status: 'INVALID', segments, warnings, finalState: state };
   }
+  const initialOffset = float32Offset(state.position);
+  if (initialOffset > FLOAT32_MAX_OFFSET_MM) {
+    warn(1, 'FLOAT32_PRECISION_LOSS', precisionLossMessage(initialOffset));
+    state.position = unknownPosition();
+    return { status: 'INVALID', segments, warnings, finalState: state };
+  }
 
+  let totalArcVertices = 0;
   for (let index = 0; index < lines.length && !stopped; index += 1) {
     const sourceLine = index + 1;
     const rawCode = lines[index];
@@ -278,6 +295,13 @@ export function parseGcode(text: string, options: ParserOptions = {}): ParseResu
         Object.assign(state, blockStartState);
         status = 'INVALID'; stopped = true; break;
       }
+      const endOffset = float32Offset(end);
+      if (!arcMotion && endOffset > FLOAT32_MAX_OFFSET_MM) {
+        warn(sourceLine, 'FLOAT32_PRECISION_LOSS', precisionLossMessage(endOffset));
+        Object.assign(state, blockStartState);
+        state.position = unknownPosition();
+        status = segments.length ? 'PARTIAL' : 'UNSUPPORTED'; stopped = true; break;
+      }
       if (arcMotion) {
         const arc = solveArc(start, end, state.plane!, state.motionMode === 'G02', byLetter, scale);
         if (!arc) {
@@ -292,6 +316,19 @@ export function parseGcode(text: string, options: ParserOptions = {}): ParseResu
           warn(sourceLine, 'ARC_TESSELLATION_LIMIT', `Arc requires more than ${ARC_MAX_SEGMENTS} vertices to stay within ${ARC_MAX_SAGITTA_MM} mm sagitta tolerance`);
           Object.assign(state, blockStartState); status = 'INVALID'; stopped = true; break;
         }
+        const arcVertexCount = count + 1;
+        if (totalArcVertices + arcVertexCount > ARC_MAX_TOTAL_VERTICES) {
+          warn(sourceLine, 'ARC_VERTEX_BUDGET', `Arc would exceed the cumulative ${ARC_MAX_TOTAL_VERTICES} vertex budget; parsing stopped to limit memory use`);
+          Object.assign(state, blockStartState);
+          state.position = unknownPosition();
+          status = segments.length ? 'PARTIAL' : 'UNSUPPORTED'; stopped = true; break;
+        }
+        if (endOffset > FLOAT32_MAX_OFFSET_MM) {
+          warn(sourceLine, 'FLOAT32_PRECISION_LOSS', precisionLossMessage(endOffset));
+          Object.assign(state, blockStartState);
+          state.position = unknownPosition();
+          status = segments.length ? 'PARTIAL' : 'UNSUPPORTED'; stopped = true; break;
+        }
         const vertices = new Float64Array((count + 1) * 3);
         for (let i = 0; i <= count; i += 1) {
           const fraction = i / count, angle = Math.atan2(start[arc.axes.v]! - arc.centerV, start[arc.axes.u]! - arc.centerU) + arc.sweep * fraction;
@@ -299,7 +336,14 @@ export function parseGcode(text: string, options: ParserOptions = {}): ParseResu
           point[arc.axes.u] = i === count ? end[arc.axes.u] : arc.centerU + arc.radius * Math.cos(angle);
           point[arc.axes.v] = i === count ? end[arc.axes.v] : arc.centerV + arc.radius * Math.sin(angle);
           point[arc.axes.out] = start[arc.axes.out]! + (end[arc.axes.out]! - start[arc.axes.out]!) * fraction;
+          const pointOffset = float32Offset(point);
           if (!renderablePosition(point)) {
+            if (pointOffset > FLOAT32_MAX_OFFSET_MM && Number.isFinite(pointOffset)) {
+              warn(sourceLine, 'FLOAT32_PRECISION_LOSS', precisionLossMessage(pointOffset));
+              Object.assign(state, blockStartState);
+              state.position = unknownPosition();
+              status = segments.length ? 'PARTIAL' : 'UNSUPPORTED'; stopped = true; break;
+            }
             warn(sourceLine, 'CALCULATION_OVERFLOW', 'Arc tessellation exceeded the supported Float32 range');
             Object.assign(state, blockStartState); status = 'INVALID'; stopped = true; break;
           }
@@ -308,6 +352,7 @@ export function parseGcode(text: string, options: ParserOptions = {}): ParseResu
           vertices[i * 3 + 2] = point.z!;
         }
         if (stopped) break;
+        totalArcVertices += arcVertexCount;
         state.position = end;
         segments.push({ id: `line-${sourceLine}-segment-0`, sourceLine, ...(byLetter.has('N') ? { nBlock: String(byLetter.get('N')![0]) } : {}), rawCode, motion: state.motionMode, start, end, vertices, unit: state.unit, distanceMode: state.distanceMode, plane: state.plane, status: 'SUPPORTED', warningIds: [], ...(state.feed !== null ? { feed: state.feed } : {}), ...(state.spindle !== null ? { spindle: state.spindle } : {}), ...(state.tool !== null ? { tool: state.tool } : {}) });
         if (mWords.includes(2) || mWords.includes(30)) { programEndIndex = index; stopped = true; }

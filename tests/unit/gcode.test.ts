@@ -66,6 +66,32 @@ describe('parseGcode', () => {
     expect(overflow.warnings[0].code).toBe('CALCULATION_OVERFLOW');
   });
 
+  it('stops when Float32 display coordinates lose more than 0.01 mm', () => {
+    const initial = parseGcode('', { initialPosition: { x: 100_000_001, y: 0, z: 0 } });
+    expect(initial.status).toBe('INVALID');
+    expect(initial.warnings[0]).toMatchObject({ code: 'FLOAT32_PRECISION_LOSS', message: expect.stringContaining('1 mm') });
+
+    const line = parseGcode('G21 G90 G00 X100000000 Y0 Z0\nG01 X100000001', { initialPosition: origin });
+    expect(line.status).toBe('PARTIAL');
+    expect(line.segments).toHaveLength(1);
+    expect(line.warnings[0]).toMatchObject({ sourceLine: 2, code: 'FLOAT32_PRECISION_LOSS' });
+    expect(line.finalState.position).toEqual({ x: null, y: null, z: null });
+
+    const arc = parseGcode('G21 G90 G17 G03 I0 J1', { initialPosition: { x: 100_000_000, y: 0, z: 0 } });
+    expect(arc.status).toBe('UNSUPPORTED');
+    expect(arc.segments).toHaveLength(0);
+    expect(arc.warnings[0].code).toBe('FLOAT32_PRECISION_LOSS');
+  });
+
+  it('limits tessellation vertices cumulatively across arcs and keeps the verified prefix', () => {
+    const arcCountUnderBudget = Math.floor(1_000_000 / 73);
+    const input = Array.from({ length: arcCountUnderBudget + 1 }, () => 'G21 G90 G17 G03 I-1 J0').join('\n');
+    const result = parseGcode(input, { initialPosition: { x: 1, y: 0, z: 0 } });
+    expect(result.status).toBe('PARTIAL');
+    expect(result.segments).toHaveLength(arcCountUnderBudget);
+    expect(result.warnings.at(-1)).toMatchObject({ sourceLine: arcCountUnderBudget + 1, code: 'ARC_VERTEX_BUDGET' });
+  });
+
   it('does not draw a line from an unknown start, then recovers after an absolute full position', () => {
     const result = parseGcode('G21 G90 G01 X5\nX10 Y20 Z30\nX11', { initialPosition: { x: null, y: null, z: null } });
     expect(result.segments).toHaveLength(1);
@@ -160,8 +186,9 @@ describe('parseGcode', () => {
     }
     expect(maxSagitta).toBeLessThanOrEqual(0.01 + 1e-9);
 
-    const enormous = parseGcode('G21 G90 G17 G03 X0 Y1000000000000 I-1000000000000 J0', {
-      initialPosition: { x: 1_000_000_000_000, y: 0, z: 0 },
+    const exactFloat32LargeCoordinate = 1_099_511_627_776; // 2^40 is exactly representable in Float32.
+    const enormous = parseGcode(`G21 G90 G17 G03 X0 Y${exactFloat32LargeCoordinate} I-${exactFloat32LargeCoordinate} J0`, {
+      initialPosition: { x: exactFloat32LargeCoordinate, y: 0, z: 0 },
     });
     expect(enormous.status).toBe('INVALID');
     expect(enormous.segments).toHaveLength(0);
