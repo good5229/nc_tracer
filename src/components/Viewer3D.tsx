@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 
 export type ViewerPoint = { x: number | null; y: number | null; z: number | null };
-export type ViewerMotion = 'G00' | 'G01';
+export type ViewerMotion = 'G00' | 'G01' | 'G02' | 'G03';
 export type ViewerSegment = {
   id: string;
   sourceLine: number;
@@ -12,6 +12,8 @@ export type ViewerSegment = {
   motion: ViewerMotion;
   start: ViewerPoint;
   end: ViewerPoint;
+  /** Optional ordered tessellation points for a validated arc move, including start/end. */
+  vertices?: ViewerPoint[] | Float32Array;
 };
 export type ViewerPlane = 'XY' | 'XZ' | 'YZ';
 
@@ -21,11 +23,14 @@ export interface Viewer3DProps {
   onSelectSegment?: (segment: ViewerSegment) => void;
   showRapid?: boolean;
   showLinear?: boolean;
+  showNodes?: boolean;
+  /** Draw movement blocks strictly before this segment in source order. */
+  progressSegmentId?: string | null;
   className?: string;
   style?: React.CSSProperties;
 }
 
-type RenderedSegment = { source: ViewerSegment; a: THREE.Vector3; b: THREE.Vector3 };
+type RenderedSegment = { source: ViewerSegment; a: THREE.Vector3; b: THREE.Vector3; points: THREE.Vector3[] };
 
 const finitePoint = (p: ViewerPoint): p is { x: number; y: number; z: number } =>
   Number.isFinite(p.x) && Number.isFinite(p.y) && Number.isFinite(p.z);
@@ -37,6 +42,8 @@ export default function Viewer3D({
   onSelectSegment,
   showRapid: rapidProp = true,
   showLinear: linearProp = true,
+  showNodes = true,
+  progressSegmentId = selectedSegmentId,
   className,
   style,
 }: Viewer3DProps) {
@@ -49,14 +56,19 @@ export default function Viewer3D({
     rapid: THREE.LineSegments;
     linear: THREE.LineSegments;
     highlight: THREE.LineSegments;
+    playedRapid: THREE.LineSegments;
+    playedLinear: THREE.LineSegments;
+    nodes: THREE.Points;
     raycaster: THREE.Raycaster;
     resizeObserver: ResizeObserver;
-    frame: number;
+    requestRender: () => void;
   } | null>(null);
   const renderedRef = useRef<RenderedSegment[]>([]);
+  const renderedById = useRef(new Map<string, RenderedSegment>());
   const selectRef = useRef(onSelectSegment);
   const [showRapid, setShowRapid] = useState(rapidProp);
   const [showLinear, setShowLinear] = useState(linearProp);
+  const [showNodesState, setShowNodesState] = useState(showNodes);
   const [plane, setPlane] = useState<ViewerPlane>('XY');
   const [ready, setReady] = useState(false);
 
@@ -78,7 +90,7 @@ export default function Viewer3D({
     host.appendChild(renderer.domElement);
 
     const controls = new OrbitControls(camera, renderer.domElement);
-    controls.enableDamping = true;
+    controls.enableDamping = false;
     controls.dampingFactor = 0.08;
     controls.target.set(0, 0, 0);
 
@@ -89,49 +101,61 @@ export default function Viewer3D({
     axes.name = 'toolpath-axes';
     scene.add(axes);
 
-    const rapid = new THREE.LineSegments(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: '#f4a340' }));
-    const linear = new THREE.LineSegments(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: '#38c8a0' }));
+    const rapid = new THREE.LineSegments(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: '#f4a340', transparent: true, opacity: 0.38 }));
+    const linear = new THREE.LineSegments(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: '#38c8a0', transparent: true, opacity: 0.38 }));
     const highlight = new THREE.LineSegments(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: '#fff36d', linewidth: 3, depthTest: false }));
+    const playedRapid = new THREE.LineSegments(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: '#ffcb79', transparent: true, opacity: 0.95 }));
+    const playedLinear = new THREE.LineSegments(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: '#7fffd4', transparent: true, opacity: 0.95 }));
+    const nodes = new THREE.Points(new THREE.BufferGeometry(), new THREE.PointsMaterial({ color: '#cbd5e1', size: 3, sizeAttenuation: false, transparent: true, opacity: 0.8 }));
     highlight.renderOrder = 2;
-    scene.add(rapid, linear, highlight);
+    playedRapid.renderOrder = 1;
+    playedLinear.renderOrder = 1;
+    nodes.renderOrder = 1;
+    scene.add(rapid, linear, playedRapid, playedLinear, nodes, highlight);
     const raycaster = new THREE.Raycaster();
     raycaster.params.Line = { threshold: 1.5 };
 
+    let frame = 0;
+    const requestRender = () => {
+      if (frame) return;
+      frame = requestAnimationFrame(() => { frame = 0; renderer.render(scene, camera); });
+    };
+    controls.addEventListener('change', requestRender);
     const resize = () => {
       const width = Math.max(1, host.clientWidth);
       const height = Math.max(1, host.clientHeight);
       camera.aspect = width / height;
       camera.updateProjectionMatrix();
       renderer.setSize(width, height, false);
+      requestRender();
     };
     const resizeObserver = new ResizeObserver(resize);
     resizeObserver.observe(host);
     resize();
 
-    let frame = 0;
-    const animate = () => {
-      frame = requestAnimationFrame(animate);
-      controls.update();
-      renderer.render(scene, camera);
-    };
-    animate();
     const handleClick = (event: MouseEvent) => {
       const rect = renderer.domElement.getBoundingClientRect();
       raycaster.setFromCamera(new THREE.Vector2(
         ((event.clientX - rect.left) / rect.width) * 2 - 1,
         -((event.clientY - rect.top) / rect.height) * 2 + 1,
       ), camera);
-      const visible = [showRapidRef.current ? rapid : null, showLinearRef.current ? linear : null].filter(Boolean) as THREE.LineSegments[];
+      const visible = [showRapidRef.current ? rapid : null, showLinearRef.current ? linear : null].filter(Boolean) as THREE.Object3D[];
+      if (showNodesRef.current) visible.push(nodes);
       const hit = raycaster.intersectObjects(visible, false)[0];
       if (!hit) return;
+      if (hit.object === nodes) {
+        const item = renderedRef.current[hit.index ?? -1];
+        if (item) selectRef.current?.(item.source);
+        return;
+      }
       const index = typeof hit.index === 'number' ? Math.floor(hit.index / 2) : -1;
       const object = hit.object as THREE.LineSegments;
-      const bucket = object === rapid ? rapidRef.current : linearRef.current;
+      const bucket = object === rapid ? rapidPrimitiveSources.current : linearPrimitiveSources.current;
       const item = bucket[index];
-      if (item) selectRef.current?.(item.source);
+      if (item) selectRef.current?.(item);
     };
     renderer.domElement.addEventListener('click', handleClick);
-    engineRef.current = { renderer, scene, camera, controls, rapid, linear, highlight, raycaster, resizeObserver, frame };
+    engineRef.current = { renderer, scene, camera, controls, rapid, linear, highlight, playedRapid, playedLinear, nodes, raycaster, resizeObserver, requestRender };
     setReady(true);
 
     return () => {
@@ -139,9 +163,10 @@ export default function Viewer3D({
       cancelAnimationFrame(frame);
       resizeObserver.disconnect();
       renderer.domElement.removeEventListener('click', handleClick);
+      controls.removeEventListener('change', requestRender);
       controls.dispose();
       scene.traverse((object) => {
-        if (object instanceof THREE.LineSegments) {
+        if (object instanceof THREE.LineSegments || object instanceof THREE.Points) {
           object.geometry.dispose();
           const material = object.material;
           if (Array.isArray(material)) material.forEach((m) => m.dispose()); else material.dispose();
@@ -160,42 +185,95 @@ export default function Viewer3D({
 
   const rapidRef = useRef<RenderedSegment[]>([]);
   const linearRef = useRef<RenderedSegment[]>([]);
+  const rapidPrimitiveSources = useRef<ViewerSegment[]>([]);
+  const linearPrimitiveSources = useRef<ViewerSegment[]>([]);
+  const progressCounts = useRef(new Map<string, { rapid: number; linear: number }>());
   const showRapidRef = useRef(showRapid);
   const showLinearRef = useRef(showLinear);
-  useEffect(() => { showRapidRef.current = showRapid; if (engineRef.current) engineRef.current.rapid.visible = showRapid; }, [showRapid]);
-  useEffect(() => { showLinearRef.current = showLinear; if (engineRef.current) engineRef.current.linear.visible = showLinear; }, [showLinear]);
+  const showNodesRef = useRef(showNodesState);
+  useEffect(() => { showRapidRef.current = showRapid; if (engineRef.current) { engineRef.current.rapid.visible = showRapid; engineRef.current.playedRapid.visible = showRapid; engineRef.current.requestRender(); } }, [showRapid]);
+  useEffect(() => { showLinearRef.current = showLinear; if (engineRef.current) { engineRef.current.linear.visible = showLinear; engineRef.current.playedLinear.visible = showLinear; engineRef.current.requestRender(); } }, [showLinear]);
+  useEffect(() => { setShowNodesState(showNodes); }, [showNodes]);
+  useEffect(() => { showNodesRef.current = showNodesState; if (engineRef.current) { engineRef.current.nodes.visible = showNodesState; engineRef.current.requestRender(); } }, [showNodesState]);
 
   useEffect(() => {
     const engine = engineRef.current;
     const valid: RenderedSegment[] = [];
     for (const segment of segments) {
       if (!finitePoint(segment.start) || !finitePoint(segment.end)) continue;
-      const a = new THREE.Vector3(segment.start.x, segment.start.y, segment.start.z);
-      const b = new THREE.Vector3(segment.end.x, segment.end.y, segment.end.z);
-      // Zero-length moves remain selectable through source data but do not make a visible line.
-      if (a.distanceToSquared(b) > 0) valid.push({ source: segment, a, b });
+      let path: ViewerPoint[];
+      if (segment.vertices instanceof Float32Array) {
+        if (segment.vertices.length < 6 || segment.vertices.length % 3 !== 0) continue;
+        path = [];
+        for (let i = 0; i < segment.vertices.length; i += 3) {
+          path.push({ x: segment.vertices[i], y: segment.vertices[i + 1], z: segment.vertices[i + 2] });
+        }
+      } else {
+        path = segment.vertices?.length ? segment.vertices : [segment.start, segment.end];
+      }
+      if (path.some((point) => !finitePoint(point))) continue;
+      const points = (path as Array<{ x: number; y: number; z: number }>).map((point) => new THREE.Vector3(point.x, point.y, point.z));
+      const a = points[0];
+      const b = points[points.length - 1];
+      if (points.length > 1 && points.some((point, index) => index > 0 && point.distanceToSquared(points[index - 1]) > 0)) {
+        valid.push({ source: segment, a, b, points });
+      }
     }
     renderedRef.current = valid;
+    renderedById.current = new Map(valid.map(item => [item.source.id, item]));
     rapidRef.current = valid.filter((item) => item.source.motion === 'G00');
-    linearRef.current = valid.filter((item) => item.source.motion === 'G01');
+    linearRef.current = valid.filter((item) => item.source.motion !== 'G00');
+    progressCounts.current.clear();
+    let rapidProgress = 0;
+    let linearProgress = 0;
+    valid.forEach((item) => {
+      progressCounts.current.set(item.source.id, { rapid: rapidProgress, linear: linearProgress });
+      if (item.source.motion === 'G00') rapidProgress += item.points.length - 1;
+      else linearProgress += item.points.length - 1;
+    });
     if (!engine) return;
 
-    const setGeometry = (line: THREE.LineSegments, items: RenderedSegment[]) => {
+    const setGeometry = (line: THREE.LineSegments, items: RenderedSegment[], sources: ViewerSegment[]) => {
       line.geometry.dispose();
-      const positions = new Float32Array(items.length * 6);
-      items.forEach(({ a, b }, i) => {
-        positions.set([a.x, a.y, a.z, b.x, b.y, b.z], i * 6);
+      const primitiveCount = items.reduce((count, item) => count + item.points.length - 1, 0);
+      const positions = new Float32Array(primitiveCount * 6);
+      let offset = 0;
+      sources.length = 0;
+      items.forEach((item) => {
+        for (let i = 1; i < item.points.length; i += 1) {
+          const start = item.points[i - 1];
+          const end = item.points[i];
+          positions.set([start.x, start.y, start.z, end.x, end.y, end.z], offset);
+          offset += 6;
+          sources.push(item.source);
+        }
       });
       const geometry = new THREE.BufferGeometry();
       geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
       geometry.computeBoundingSphere();
       line.geometry = geometry;
     };
-    setGeometry(engine.rapid, rapidRef.current);
-    setGeometry(engine.linear, linearRef.current);
+    setGeometry(engine.rapid, rapidRef.current, rapidPrimitiveSources.current);
+    setGeometry(engine.linear, linearRef.current, linearPrimitiveSources.current);
+    const bindProgressGeometry = (played: THREE.LineSegments, source: THREE.LineSegments) => {
+      played.geometry.dispose();
+      played.geometry = new THREE.BufferGeometry();
+      played.geometry.setAttribute('position', source.geometry.getAttribute('position'));
+      played.geometry.setDrawRange(0, 0);
+      played.geometry.boundingSphere = source.geometry.boundingSphere;
+    };
+    bindProgressGeometry(engine.playedRapid, engine.rapid);
+    bindProgressGeometry(engine.playedLinear, engine.linear);
+    const nodePositions = new Float32Array(valid.length * 3);
+    valid.forEach((item, index) => nodePositions.set([item.b.x, item.b.y, item.b.z], index * 3));
+    engine.nodes.geometry.dispose();
+    engine.nodes.geometry = new THREE.BufferGeometry();
+    engine.nodes.geometry.setAttribute('position', new THREE.BufferAttribute(nodePositions, 3));
+    engine.nodes.geometry.computeBoundingSphere();
+    engine.nodes.visible = showNodesState;
 
     const box = new THREE.Box3();
-    valid.forEach(({ a, b }) => { box.expandByPoint(a); box.expandByPoint(b); });
+    valid.forEach((item) => item.points.forEach((point) => box.expandByPoint(point)));
     const center = valid.length ? box.getCenter(new THREE.Vector3()) : new THREE.Vector3();
     engine.controls.target.copy(center);
     const size = valid.length ? box.getSize(new THREE.Vector3()) : new THREE.Vector3(100, 100, 100);
@@ -210,20 +288,35 @@ export default function Viewer3D({
     if (axes) { axes.scale.setScalar(Math.max(0.01, span / 100)); axes.position.set(0, 0, 0); }
     frameSelection();
     if (valid.length) fitAll();
+    engine.requestRender();
   }, [segments]);
+
+  useEffect(() => {
+    const engine = engineRef.current;
+    if (!engine) return;
+    const counts = progressSegmentId ? progressCounts.current.get(progressSegmentId) : undefined;
+    engine.playedRapid.geometry.setDrawRange(0, (counts?.rapid ?? 0) * 2);
+    engine.playedLinear.geometry.setDrawRange(0, (counts?.linear ?? 0) * 2);
+    engine.requestRender();
+  }, [progressSegmentId, ready]);
 
   function frameSelection() {
     const engine = engineRef.current;
     if (!engine) return;
-    const selected = renderedRef.current.find((item) => item.source.id === selectedSegmentId);
+    const selected = selectedSegmentId ? renderedById.current.get(selectedSegmentId) : undefined;
     engine.highlight.geometry.dispose();
     const geo = new THREE.BufferGeometry();
     if (selected) {
-      geo.setAttribute('position', new THREE.Float32BufferAttribute([
-        selected.a.x, selected.a.y, selected.a.z, selected.b.x, selected.b.y, selected.b.z,
-      ], 3));
+      const positions = new Float32Array((selected.points.length - 1) * 6);
+      for (let i = 1; i < selected.points.length; i += 1) {
+        const a = selected.points[i - 1];
+        const b = selected.points[i];
+        positions.set([a.x, a.y, a.z, b.x, b.y, b.z], (i - 1) * 6);
+      }
+      geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
     }
     engine.highlight.geometry = geo;
+    engine.requestRender();
   }
 
   useEffect(() => { frameSelection(); }, [selectedSegmentId, ready]);
@@ -234,7 +327,7 @@ export default function Viewer3D({
     if (!engine) return;
     const target = engine.controls.target;
     const box = new THREE.Box3();
-    renderedRef.current.forEach(({ a, b }) => { box.expandByPoint(a); box.expandByPoint(b); });
+    renderedRef.current.forEach((item) => item.points.forEach((point) => box.expandByPoint(point)));
     const span = renderedRef.current.length ? box.getSize(new THREE.Vector3()).length() : 200;
     const distance = Math.max(100, span * 1.4);
     const grid = engine.scene.getObjectByName('toolpath-grid');
@@ -262,7 +355,7 @@ export default function Viewer3D({
     const engine = engineRef.current;
     if (!engine) return;
     const box = new THREE.Box3();
-    renderedRef.current.forEach(({ a, b }) => { box.expandByPoint(a); box.expandByPoint(b); });
+    renderedRef.current.forEach((item) => item.points.forEach((point) => box.expandByPoint(point)));
     if (box.isEmpty()) { engine.controls.target.set(0, 0, 0); engine.camera.position.set(120, -150, 140); engine.camera.up.set(0, 0, 1); }
     else {
       const center = box.getCenter(new THREE.Vector3());
@@ -287,7 +380,8 @@ export default function Viewer3D({
         <button type="button" onClick={fitOrigin} style={buttonStyle}>원점 맞춤</button>
         {(['XY', 'XZ', 'YZ'] as ViewerPlane[]).map((v) => <button key={v} type="button" aria-pressed={plane === v} onClick={() => setView(v)} style={{ ...buttonStyle, background: plane === v ? '#334155' : '#1f2937' }}>{v}</button>)}
         <label style={toggleStyle}><input type="checkbox" checked={showRapid} onChange={(e) => setShowRapid(e.target.checked)} /> G00 급속</label>
-        <label style={toggleStyle}><input type="checkbox" checked={showLinear} onChange={(e) => setShowLinear(e.target.checked)} /> G01 절삭</label>
+        <label style={toggleStyle}><input type="checkbox" checked={showLinear} onChange={(e) => setShowLinear(e.target.checked)} /> G01/G02/G03 경로</label>
+        <label style={toggleStyle}><input type="checkbox" checked={showNodesState} onChange={(e) => setShowNodesState(e.target.checked)} /> 점 표시</label>
         <span style={{ marginLeft: 'auto', color: '#9ca3af' }}>G00 <span style={{ color: '#f4a340' }}>━</span> G01 <span style={{ color: '#38c8a0' }}>━</span></span>
       </div>
       <div ref={hostRef} style={{ position: 'relative', flex: 1, minHeight: 200, cursor: 'crosshair' }}>
