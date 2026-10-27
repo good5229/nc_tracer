@@ -152,6 +152,72 @@ describe('parseGcode', () => {
     expect(mid19.z).toBeCloseTo(1, 5);
   });
 
+  it('checks clockwise and counterclockwise direction independently in all three planes', () => {
+    const q = Math.SQRT1_2;
+    const cases = [
+      { plane: 'G17', cw: 'G02 X0 Y-1 I-1 J0', ccw: 'G03 X0 Y1 I-1 J0', start: { x: 1, y: 0, z: 0 }, cwMid: { x: q, y: -q, z: 0 }, ccwMid: { x: q, y: q, z: 0 } },
+      { plane: 'G18', cw: 'G02 X-1 Z0 I0 K-1', ccw: 'G03 X1 Z0 I0 K-1', start: { x: 0, y: 0, z: 1 }, cwMid: { x: -q, y: 0, z: q }, ccwMid: { x: q, y: 0, z: q } },
+      { plane: 'G19', cw: 'G02 Y0 Z-1 J-1 K0', ccw: 'G03 Y0 Z1 J-1 K0', start: { x: 0, y: 1, z: 0 }, cwMid: { x: 0, y: q, z: -q }, ccwMid: { x: 0, y: q, z: q } },
+    ];
+    for (const sample of cases) {
+      for (const [move, expectedMid] of [[sample.cw, sample.cwMid], [sample.ccw, sample.ccwMid]] as const) {
+        const result = parseGcode(`G21 G90 ${sample.plane} ${move}`, { initialPosition: sample.start });
+        expect(result.status).toBe('SUPPORTED');
+        expect(result.segments).toHaveLength(1);
+        expect(result.segments[0].start).toEqual(sample.start);
+        const end = vertexAt(result.segments[0].vertices!, result.segments[0].vertices!.length / 3 - 1);
+        expect(end).toMatchObject(result.segments[0].end);
+        const mid = vertexAt(result.segments[0].vertices!, Math.floor((result.segments[0].vertices!.length / 3 - 1) / 2));
+        expect(mid.x).toBeCloseTo(expectedMid.x, 5);
+        expect(mid.y).toBeCloseTo(expectedMid.y, 5);
+        expect(mid.z).toBeCloseTo(expectedMid.z, 5);
+      }
+    }
+  });
+
+  it('converts G20 arc words to millimeters and interpolates a G91 helical arc', () => {
+    const inchArc = parseGcode('G20 G90 G17 G03 X0 Y1 I-1 J0', { initialPosition: { x: 25.4, y: 0, z: 0 } });
+    expect(inchArc.status).toBe('SUPPORTED');
+    expect(inchArc.segments[0]).toMatchObject({ unit: 'inch', start: { x: 25.4, y: 0, z: 0 }, end: { x: 0, y: 25.4, z: 0 } });
+    const inchMid = vertexAt(inchArc.segments[0].vertices!, Math.floor((inchArc.segments[0].vertices!.length / 3 - 1) / 2));
+    expect(inchMid.x).toBeCloseTo(25.4 / Math.SQRT2, 5);
+    expect(inchMid.y).toBeCloseTo(25.4 / Math.SQRT2, 5);
+
+    const helix = parseGcode('G21 G91 G17 G03 X-1 Y1 Z2 I-1 J0', { initialPosition: { x: 1, y: 0, z: 0 } });
+    expect(helix.status).toBe('SUPPORTED');
+    expect(helix.segments[0]).toMatchObject({ distanceMode: 'incremental', start: { x: 1, y: 0, z: 0 }, end: { x: 0, y: 1, z: 2 } });
+    const helixMid = vertexAt(helix.segments[0].vertices!, Math.floor((helix.segments[0].vertices!.length / 3 - 1) / 2));
+    expect(helixMid.x).toBeCloseTo(Math.SQRT1_2, 5);
+    expect(helixMid.y).toBeCloseTo(Math.SQRT1_2, 5);
+    expect(helixMid.z).toBeCloseTo(1, 5);
+  });
+
+  it('selects signed R minor and major sweeps independently for CW and CCW arcs', () => {
+    const q = Math.SQRT1_2;
+    const cases = [
+      { motion: 'G03', radius: 'R1', expected: { x: q, y: q } },
+      { motion: 'G03', radius: 'R-1', expected: { x: 1 + q, y: 1 + q } },
+      { motion: 'G02', radius: 'R1', expected: { x: 1 - q, y: 1 - q } },
+      { motion: 'G02', radius: 'R-1', expected: { x: -q, y: -q } },
+    ];
+    for (const sample of cases) {
+      const result = parseGcode(`G21 G90 G17 ${sample.motion} X0 Y1 ${sample.radius}`, { initialPosition: { x: 1, y: 0, z: 0 } });
+      expect(result.status).toBe('SUPPORTED');
+      expect(result.segments[0].end).toEqual({ x: 0, y: 1, z: 0 });
+      const mid = vertexAt(result.segments[0].vertices!, Math.floor((result.segments[0].vertices!.length / 3 - 1) / 2));
+      expect(mid.x).toBeCloseTo(sample.expected.x, 5);
+      expect(mid.y).toBeCloseTo(sample.expected.y, 5);
+      expect(mid.z).toBeCloseTo(0, 5);
+    }
+  });
+
+  it('reports a center offset whose radius disagrees with the arc endpoint', () => {
+    const result = parseGcode('G21 G90 G17 G03 X0 Y1 I-1 J-1', { initialPosition: { x: 1, y: 0, z: 0 } });
+    expect(result.status).toBe('INVALID');
+    expect(result.segments).toHaveLength(0);
+    expect(result.warnings[0]).toMatchObject({ sourceLine: 1, code: 'INVALID_ARC_GEOMETRY' });
+  });
+
   it('supports full circles from IJK, but rejects full circles from R', () => {
     const full = parseGcode('G21 G90 G17 G03 I-1 J0', { initialPosition: { x: 1, y: 0, z: 0 } });
     expect(full.status).toBe('SUPPORTED');
