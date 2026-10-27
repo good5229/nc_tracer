@@ -7,6 +7,8 @@ import twoMoves from '../fixtures/linuxcnc-g70-two-moves.json';
 import arcAnchor from '../fixtures/linuxcnc-g70-arc-anchor.json';
 import arcTop from '../fixtures/linuxcnc-g70-arc-on-top.json';
 import anchors from '../fixtures/linuxcnc-g70-anchors.json';
+import belowComp from '../fixtures/linuxcnc-g70-comp-below.json';
+import lowAllowance from '../fixtures/linuxcnc-g70-comp-lowallow.json';
 const settings={controllerProfile:'linuxcnc' as const,linuxcncLatheToolReference:{tools:{}},initialPosition:{x:0,y:0,z:0},initialDistanceMode:'absolute' as const};
 describe('LinuxCNC explicit lathe compensation profile',()=>{
  for(const name of ['lathe_comp_left','lathe_comp_right','lathe_comp_arc'] as const)it(`matches ${name}`,()=>{
@@ -228,4 +230,18 @@ it('refuses unverified non-rapid profile entry below the first point',()=>{
  const source=readFileSync(new URL('../fixtures/g70_anchor_below.ngc',import.meta.url),'utf8').replace('G0 X4 Z1','G1 X4 Z1');
  const point={controllerProfile:'linuxcnc' as const,linuxcncPointToolReference:true,initialPosition:{x:0,y:0,z:0},initialDistanceMode:'absolute' as const};
  expect(parseGcode(source,point).warnings.at(-1)?.code).toBe('UNSUPPORTED_G70_ANCHOR');
+});
+
+it.each(['left_entry','left_prior','right_entry','right_prior'] as const)('matches LinuxCNC compensated G70 with a lower initial anchor for %s',name=>{
+ const source=readFileSync(new URL(`../fixtures/g70_comp_below_${name}.ngc`,import.meta.url),'utf8');
+ const table={...settings,linuxcncLatheToolReference:{tools:{'1':{diameter:.4,orientation:2,offsetX:0,offsetZ:0}}}};
+ const result=parseGcode(source,table),expected=belowComp[name];expect(result.status).toBe('SUPPORTED');expect(result.warnings).toEqual([]);expect(result.segments).toHaveLength(expected.length);
+ result.segments.forEach((s,i)=>{expect(s.motion,`motion ${i}`).toBe(expected[i].motion);expect(s.end.x,`X ${i}`).toBeCloseTo(expected[i].end[0],4);expect(s.end.z,`Z ${i}`).toBeCloseTo(expected[i].end[1],4);if(i)expect(s.start).toEqual(result.segments[i-1].end);const center=expected[i].center;if(center){const vertices=s.vertices!;expect(vertices).toBeDefined();const r=Math.hypot(s.start.x!-center[0],s.start.z!-center[1]);for(let n=0;n<vertices.length;n+=3)expect(Math.abs(Math.hypot(vertices[n]-center[0],vertices[n+2]-center[1])-r)).toBeLessThan(.0002);}});
+});
+
+it.each(['left_entry','left_prior','right_entry','right_prior'] as const)('matches LinuxCNC compensated low-anchor G70 with allowance for %s',name=>{
+ const source=readFileSync(new URL(`../fixtures/g70_comp_lowallow_${name}.ngc`,import.meta.url),'utf8');
+ const table={...settings,linuxcncLatheToolReference:{tools:{'1':{diameter:.4,orientation:2,offsetX:0,offsetZ:0}}}};
+ const result=parseGcode(source,table),expected=lowAllowance[name];expect(result.status).toBe('SUPPORTED');expect(result.warnings).toEqual([]);expect(result.segments).toHaveLength(expected.length);
+ result.segments.forEach((s,i)=>{expect(s.motion,`motion ${i}`).toBe(expected[i].motion);expect(s.end.x,`X ${i}`).toBeCloseTo(expected[i].end[0],4);expect(s.end.z,`Z ${i}`).toBeCloseTo(expected[i].end[1],4);if(i)expect(s.start).toEqual(result.segments[i-1].end);const center=expected[i].center;if(center){const vertices=s.vertices!;expect(vertices).toBeDefined();const r=Math.hypot(s.start.x!-center[0],s.start.z!-center[1]);for(let n=0;n<vertices.length;n+=3)expect(Math.abs(Math.hypot(vertices[n]-center[0],vertices[n+2]-center[1])-r)).toBeLessThan(.0002);}});
 });
