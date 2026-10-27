@@ -82,3 +82,82 @@ test('filtered current motion keeps earlier visible progress', async ({page}) =>
  const beforeProgress=await canvas.screenshot();
  expect(afterFilter.equals(beforeProgress)).toBe(false);
 });
+
+test('line width and point density change the canvas', async ({page}) => {
+ await page.goto('/nc_tracer/');
+ await page.getByRole('button',{name:'예제 불러오기'}).click();
+ await expect(page.locator('.counter')).toHaveText('1 / 6');
+ const canvas=page.locator('.viewport canvas');
+ const thin=await canvas.screenshot();
+ await page.getByLabel('선 두께').fill('8');
+ await expect(page.getByText('8px',{exact:true})).toBeVisible();
+ const thick=await canvas.screenshot();
+ expect(thick.equals(thin)).toBe(false);
+ await page.getByLabel('점 밀도').fill('5');
+ await expect(page.getByText('5%',{exact:true})).toBeVisible();
+ const sparse=await canvas.screenshot();
+ expect(sparse.equals(thick)).toBe(false);
+});
+
+test('large paths finish drawing while playback, camera, filters and file replacement remain usable', async ({page}) => {
+ test.setTimeout(60000);
+ await page.goto('/nc_tracer/');
+ const source='G21 G90 G00 X0 Y0 Z0\n'+Array.from({length:100000},(_,i)=>`G01 X${i+1} Y${i%2}`).join('\n');
+ const active=page.locator('.topbar input[type=file]');
+ await active.setInputFiles({name:'large.nc',mimeType:'text/plain',buffer:Buffer.from(source)});
+ const counter=page.locator('.counter').first();
+ await expect(counter).toContainText('/ 100000');
+ const drawing=page.getByText('경로를 나누어 그리는 중…',{exact:false});
+ await expect(drawing).toBeHidden({timeout:30000});
+ await page.getByRole('button',{name:'XZ',exact:true}).click();
+ await expect(drawing).toBeHidden({timeout:30000});
+ await page.getByLabel('재생 속도').selectOption('10');
+ await page.getByRole('button',{name:'재생',exact:true}).click();
+ await expect(counter).not.toHaveText('1 / 100000',{timeout:15000});
+ await page.getByRole('button',{name:'일시정지'}).click();
+ await expect(drawing).toBeHidden({timeout:30000});
+ await page.getByRole('region',{name:'경로 필터 및 통계'}).getByLabel('G01').uncheck();
+ await active.setInputFiles({name:'replacement.nc',mimeType:'text/plain',buffer:Buffer.from('G21 G90 G00 X0 Y0 Z0\nG01 X12\nM30')});
+ await expect(page.locator('.metrics')).toContainText('X 12');
+ await expect(page.locator('.file-name')).toHaveText('replacement.nc');
+ await expect(drawing).toBeHidden({timeout:10000});
+});
+
+test('viewer visibility choices survive path filter rebuilds', async ({page}) => {
+ await page.goto('/nc_tracer/');
+ await page.locator('.topbar input[type=file]').setInputFiles({name:'visibility.nc',mimeType:'text/plain',buffer:Buffer.from('G21 G90 G00 X0 Y0 Z0\nG00 X30\nG01 Y20\nM30')});
+ await expect(page.locator('.counter')).toHaveText('1 / 2');
+ await page.getByLabel('G00 급속',{exact:true}).uncheck();
+ const canvas=page.locator('.viewport canvas');
+ const before=await canvas.screenshot();
+ await page.getByRole('region',{name:'경로 필터 및 통계'}).getByLabel('G02').uncheck();
+ const after=await canvas.screenshot();
+ expect(after.equals(before)).toBe(true);
+});
+
+test('replacing an interrupted large drawing restores the selection highlight', async ({browser}) => {
+ test.setTimeout(60000);
+ const page=await browser.newPage({viewport:{width:1280,height:800}});
+ const fresh=await browser.newPage({viewport:{width:1280,height:800}});
+ try {
+  await Promise.all([page.goto('http://127.0.0.1:4174/nc_tracer/'),fresh.goto('http://127.0.0.1:4174/nc_tracer/')]);
+  const large='G21 G90 G00 X0 Y0 Z0\n'+Array.from({length:100000},(_,i)=>`G01 X${i+1} Y${i%2}`).join('\n');
+  await page.locator('.topbar input[type=file]').setInputFiles({name:'large.nc',mimeType:'text/plain',buffer:Buffer.from(large)});
+  await expect(page.getByText('경로를 나누어 그리는 중…',{exact:false})).toBeVisible({timeout:30000});
+  const small={name:'small.nc',mimeType:'text/plain',buffer:Buffer.from('G21 G90 G00 X0 Y0 Z0\nG01 X30\nG01 Y20\nM30')};
+  await page.locator('.topbar input[type=file]').setInputFiles(small);
+  await fresh.locator('.topbar input[type=file]').setInputFiles(small);
+  await expect(page.locator('.counter')).toHaveText('1 / 2');
+  await expect(fresh.locator('.counter')).toHaveText('1 / 2');
+  await page.locator('.viewport canvas').screenshot();
+  await fresh.locator('.viewport canvas').screenshot();
+  const yellowPixels=async (p:typeof page) => p.locator('.viewport canvas').evaluate((canvas:HTMLCanvasElement) => {
+   const gl=canvas.getContext('webgl2') ?? canvas.getContext('webgl'); if(!gl) return 0;
+   const pixels=new Uint8Array(canvas.width*canvas.height*4);gl.readPixels(0,0,canvas.width,canvas.height,gl.RGBA,gl.UNSIGNED_BYTE,pixels);let count=0;
+   for(let i=0;i<pixels.length;i+=4) if(pixels[i]>180 && pixels[i+1]>160 && pixels[i+2]<140) count++;
+   return count;
+  });
+  expect(await yellowPixels(page)).toBeGreaterThan(20);
+  expect(await yellowPixels(fresh)).toBeGreaterThan(20);
+ } finally { await page.close();await fresh.close(); }
+});

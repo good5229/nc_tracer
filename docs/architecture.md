@@ -19,7 +19,7 @@ React + TypeScript strict + Vite + Three.js. 런타임 JS/CSS/필요 자산은 �
 
 ## 뷰어와 재생
 
-전체 경로는 BufferGeometry를 사용하고 재생 진행은 draw range 또는 별도 강조 geometry로 표현한다. 모든 모션마다 React DOM/Three 객체를 만들지 않는다. 3D pick은 segment ID를 통해 원문 선택과 같은 상태 경로를 사용한다. 슬라이더 인덱스는 모션 블록 순서이며 원호 tessellation vertex와 분리한다. 재생 배속은 시각적 블록 진행 속도다.
+전체 경로는 BufferGeometry를 사용한다. 같은 유형의 완전히 동일한 표시 선분은 한 번만 그리며 원본 블록 순서와 코드별 강조는 유지한다. 재생 진행은 별도 강조 geometry의 instance count로 표현한다. 5만 개 이상의 서로 다른 선분은 프레임별 묶음으로 표시하며, 화면이 완성될 때까지 재생을 일시적으로 늦춘다. 화면 변경은 이전 그리기 작업을 취소하고 최신 상태로 다시 시작한다. 모든 모션마다 React DOM/Three 객체를 만들지 않는다. 3D pick은 segment ID를 통해 원문 선택과 같은 상태 경로를 사용한다. 슬라이더 인덱스는 모션 블록 순서이며 원호 tessellation vertex와 분리한다. 재생 배속은 시각적 블록 진행 속도다.
 
 파일 교체 시 geometry/material, Worker, 이벤트, animation frame, 선택·진행·진단을 정리한다. 컴포넌트 unmount에서 Three renderer/controls도 dispose한다. 큰 원문은 가상화 또는 bounded window로 표시하여 100k DOM 행을 피한다.
 
