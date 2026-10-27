@@ -113,10 +113,10 @@ it('calculates the complete original G76 point-table path with separately assume
  const pointOptions={controllerProfile:'linuxcnc' as const,linuxcncPointToolReference:true,initialPosition:{x:0,y:0,z:0},initialDistanceMode:'absolute' as const};
  const parsed=parseGcode(source,pointOptions);expect(parsed.status).toBe('SUPPORTED');expect(parsed.segments.some(s=>s.thread?.kind==='thread-cut')).toBe(true);
  const tools=Object.fromEntries([1,4,9].map(n=>[String(n),{diameter:.4,orientation:2,offsetX:0,offsetZ:0}]));
- const grid={radius:3.175,zMin:-16.6,zMax:0,step:.2,radialCells:16,axialCells:83,angularSegments:24};
+ const grid=LATHE_STOCK_PRESETS['thread-demo'];
  const shape=simulateLatheStock(parsed,{...pointOptions,linuxcncLatheToolReference:{tools}},'round-nose',grid,false,{'9':{width:1,length:2}},{'4':{length:2}});
- if(!shape.ok)throw new Error(shape.message);expect(shape.angularCells).toBe(24);expect(shape.removed).toBeGreaterThan(0);expect(shape.remaining.some(v=>v===1)).toBe(true);
- let mixedRings=0;for(let i=0;i<shape.remaining.length;i+=24){const ring=shape.remaining.slice(i,i+24);if(ring.some(v=>v===0)&&ring.some(v=>v===1))mixedRings++;}expect(mixedRings).toBeGreaterThan(0);
+ if(!shape.ok)throw new Error(shape.message);expect(shape.angularCells).toBe(48);expect(shape.removed).toBeGreaterThan(0);expect(shape.remaining.some(v=>v===1)).toBe(true);
+ let mixedRings=0;for(let i=0;i<shape.remaining.length;i+=48){const ring=shape.remaining.slice(i,i+48);if(ring.some(v=>v===0)&&ring.some(v=>v===1))mixedRings++;}expect(mixedRings).toBeGreaterThan(0);
 });
 it('sweeps a distinct parting blade across its stated width, including rapid collision checks',()=>{
  const setup={...options,linuxcncLatheToolReference:{tools:{'9':{diameter:.4,orientation:2,offsetX:0,offsetZ:0}}}};
@@ -153,4 +153,18 @@ it('distinguishes a hypothetical rapid contact at another spindle phase from the
  const shape=simulateLatheStock({...parsed,segments:[cut,rapid]},setup);
  if(!shape.ok)throw new Error(shape.message);
  expect(shape.phaseUncertainty).toEqual([{sourceLine:cut.sourceLine,kind:'approach'}]);
+});
+it('keeps the original point-reference stock volume stable when the example grid is refined',()=>{
+ const source=readFileSync(new URL('../../demo/lathe-g76.ngc',import.meta.url),'utf8');
+ const point={controllerProfile:'linuxcnc' as const,linuxcncPointToolReference:true,initialPosition:{x:0,y:0,z:0},initialDistanceMode:'absolute' as const};
+ const tools=Object.fromEntries([1,4,9].map(n=>[String(n),{diameter:.4,orientation:2,offsetX:0,offsetZ:0}]));
+ const parsed=parseGcode(source,point),volumes:number[]=[];
+ for(const step of [.2,.1]){
+  const grid={radius:3.175,zMin:-16.4,zMax:0,step,radialCells:Math.ceil(3.175/step),axialCells:Math.round(16.4/step),angularSegments:step===.2?24:48};
+  const shape=simulateLatheStock(parsed,{...point,linuxcncLatheToolReference:{tools}},'round-nose',grid,false,{'9':{width:1,length:2}},{'4':{length:2}});
+  if(!shape.ok)throw new Error(shape.message);let volume=0;
+  for(let z=0;z<grid.axialCells;z++)for(let r=0;r<grid.radialCells;r++)for(let a=0;a<grid.angularSegments;a++)volume+=shape.remaining[(z*grid.radialCells+r)*grid.angularSegments+a]*2*Math.PI*(r+.5)*step**3/grid.angularSegments;
+  volumes.push(volume);
+ }
+ expect(Math.abs(volumes[0]-volumes[1])/volumes[1]).toBeLessThan(.05);
 });
