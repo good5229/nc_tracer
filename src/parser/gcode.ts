@@ -1,5 +1,7 @@
-import { expandLinuxCncMacros } from './linuxcncMacro';
+import { expandLinuxCncMacros, findLinuxCncSubroutine } from './linuxcncMacro';
 import { expandLinuxCncG76 } from './linuxcncThread';
+import { expandLinuxCncG71 } from './linuxcncRoughing';
+import { resolveLinuxCncProfile } from './linuxcncProfile';
 
 export type ValidationStatus = 'SUPPORTED' | 'PARTIAL' | 'UNSUPPORTED' | 'INVALID';
 export type Vector3 = { x: number | null; y: number | null; z: number | null };
@@ -157,7 +159,7 @@ export function parseGcode(text: string, options: ParserOptions = {}): ParseResu
   if (options.controllerProfile === 'linuxcnc' && /^\s*o\d+\s+(?:sub|call|while)\b/im.test(text)) {
     const expansion = expandLinuxCncMacros(text);
     if (expansion.status === 'SUPPORTED') {
-      const result = parseCore(expansion.lines.map(line => line.text).join('\n'), options);
+      const result = parseCore(expansion.lines.map(line => line.text).join('\n'), options, text);
       for (const segment of result.segments) {
         const source = expansion.lines[segment.sourceLine - 1];
         if (source) { segment.sourceLine = source.sourceLine; segment.rawCode = source.sourceText; }
@@ -173,7 +175,7 @@ export function parseGcode(text: string, options: ParserOptions = {}): ParseResu
 }
 
 /** Parses the modal G-code subset approved for the viewer. */
-function parseCore(text: string, options: ParserOptions): ParseResult {
+function parseCore(text: string, options: ParserOptions, originalSource = text): ParseResult {
   const segments: MotionSegment[] = [];
   const warnings: ParseWarning[] = [];
   const state: ModalState = {
@@ -189,6 +191,7 @@ function parseCore(text: string, options: ParserOptions): ParseResult {
   let status: ValidationStatus = 'SUPPORTED';
   let stopped = false;
   let spindleRunning = false;
+  let cutterCompActive = false;
   const pointReference = options.controllerProfile === 'linuxcnc' && options.linuxcncPointToolReference === true;
   let latheRadiusMode = pointReference;
   const localOffset = {x:0,y:0,z:0};
@@ -247,26 +250,31 @@ function parseCore(text: string, options: ParserOptions): ParseResult {
     const pathControl = linuxcnc && gWords.includes(64);
     const dwell = linuxcnc && gWords.includes(4);
     const thread = linuxcnc && gWords.includes(76);
+    const rough = pointReference && gWords.includes(71.1);
     if (pathControl || dwell) knownLetters.add('P');
     if (pathControl) knownLetters.add('Q');
     if (thread) for (const letter of ['P','Q','H','E','L','D']) knownLetters.add(letter);
+    if (rough) for (const letter of ['Q','D']) knownLetters.add(letter);
     const unsupportedLetter = tokens.find((t) => !knownLetters.has(t.letter));
     if (unsupportedLetter || byLetter.has('M') && mWords.some((m) => !(linuxcnc ? [2, 3, 4, 5, 30, ...(pointReference ? [6] : [])] : [2, 30]).includes(m))) {
       warn(sourceLine, 'UNSUPPORTED_BLOCK', 'Unsupported word or machine command; interpretation stopped here');
       status = segments.length ? 'PARTIAL' : 'UNSUPPORTED'; stopped = true; break;
     }
 
-    const supportedG = new Set([0, 1, 2, 3, 17, 18, 19, 20, 21, 90, 91, ...(linuxcnc ? [4, 8, 61, 61.1, 64, 76] : []), ...(pointReference ? [40, 41, 42, 43, 49, 54, 92, 92.1] : [])]);
+    const supportedG = new Set([0, 1, 2, 3, 17, 18, 19, 20, 21, 90, 91, ...(linuxcnc ? [4, 8, 61, 61.1, 64, 76] : []), ...(pointReference ? [40, 41, 42, 43, 49, 54, 71.1, 92, 92.1] : [])]);
     const badG = gWords.find((g) => !supportedG.has(g));
     if (badG !== undefined) {
       warn(sourceLine, 'UNSUPPORTED_GCODE', `G${badG} is outside the supported profile; interpretation stopped here`);
       status = segments.length ? 'PARTIAL' : 'UNSUPPORTED'; stopped = true; break;
     }
     const conflicts = [
-      [0, 1, 2, 3, 76], [90, 91], [20, 21], [17, 18, 19], [61, 61.1, 64], [40,41,42], [43,49], [92,92.1],
+      [0, 1, 2, 3, 71.1, 71.2, 76], [90, 91], [20, 21], [17, 18, 19], [61, 61.1, 64], [40,41,42], [43,49], [92,92.1],
     ].some((group) => group.filter((g) => gWords.includes(g)).length > 1);
     if (conflicts) {
       warn(sourceLine, 'CONFLICTING_MODAL', 'Conflicting modal groups in one block'); status = 'INVALID'; stopped = true; break;
+    }
+    if (pointReference && ((cutterCompActive && gWords.some(g=>[41,42,54,71.1,92,92.1].includes(g))) || ((gWords.includes(41) || gWords.includes(42)) && gWords.some(g=>[54,71.1,92,92.1].includes(g))))) {
+      warn(sourceLine,'INVALID_CUTTER_COMP','Coordinate or G71 changes are not supported while cutter compensation is active');status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;
     }
     if ((pathControl || dwell) && (['P', 'Q'].some(letter => (byLetter.get(letter)?.length ?? 0) > 1 || (byLetter.get(letter)?.[0] ?? 0) < 0) || (dwell && (!byLetter.has('P') || pathControl || ['X','Y','Z','I','J','K','R'].some(letter => byLetter.has(letter)) || gWords.some(g => [0,1,2,3].includes(g)))) || (pathControl && ((byLetter.has('Q') && !byLetter.has('P')) || ((byLetter.has('P') || byLetter.has('Q')) && ['X','Y','Z','I','J','K','R'].some(letter => byLetter.has(letter))))))) {
       warn(sourceLine, 'INVALID_PATH_CONTROL', 'Invalid path control or dwell parameters'); status = 'INVALID'; stopped = true; break;
@@ -286,6 +294,8 @@ function parseCore(text: string, options: ParserOptions): ParseResult {
     if (gWords.includes(18)) state.plane = 'XZ';
     if (gWords.includes(19)) state.plane = 'YZ';
     if (gWords.includes(8)) latheRadiusMode = true;
+    if (pointReference && gWords.includes(40)) cutterCompActive = false;
+    if (pointReference && (gWords.includes(41) || gWords.includes(42))) cutterCompActive = true;
     if (mWords.includes(3) || mWords.includes(4)) spindleRunning = true;
     if (mWords.includes(5)) spindleRunning = false;
     if (mWords.includes(6)) spindleRunning = false;
@@ -309,7 +319,7 @@ function parseCore(text: string, options: ParserOptions): ParseResult {
     if (byLetter.has('T')) state.tool = byLetter.get('T')![0];
 
     if (pointReference && (gWords.includes(92) || gWords.includes(92.1))) {
-      if (gWords.some(g=>[0,1,2,3,76].includes(g)) || mWords.length || (gWords.includes(92.1) && ['X','Y','Z'].some(axis=>byLetter.has(axis))) || (gWords.includes(92) && (!state.unit || !['X','Y','Z'].some(axis=>byLetter.has(axis))))) {
+      if (gWords.some(g=>[0,1,2,3,71.1,71.2,76].includes(g)) || mWords.length || (gWords.includes(92.1) && ['X','Y','Z'].some(axis=>byLetter.has(axis))) || (gWords.includes(92) && (!state.unit || !['X','Y','Z'].some(axis=>byLetter.has(axis))))) {
         warn(sourceLine,'INVALID_G92','G92 needs known units and at least one axis; G92.1 must not contain axis words'); Object.assign(state,blockStartState); status='INVALID';stopped=true;break;
       }
       for (const axis of ['x','y','z'] as const) {
@@ -327,6 +337,44 @@ function parseCore(text: string, options: ParserOptions): ParseResult {
       }
       if(stopped)break;
       continue;
+    }
+
+    if (rough) {
+      const words=['Q','X','Z','D','I','R'];
+      const q=byLetter.get('Q')?.[0];
+      if (state.plane !== 'XZ' || state.unit !== 'mm' || state.distanceMode !== 'absolute' || !latheRadiusMode || !renderablePosition(state.position) || mWords.length || q === undefined || !Number.isInteger(q) || q < 1 || words.some(letter=>(byLetter.get(letter)?.length ?? 0)>1) || byLetter.has('Y')) {
+        warn(sourceLine,'INVALID_G71_SETUP','G71.1 requires the point-tool reference, G8/G18/G21/G90, a known position and a numbered Q profile');Object.assign(state,blockStartState);status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;
+      }
+      const routine=findLinuxCncSubroutine(originalSource,q);
+      if(!routine){warn(sourceLine,'UNKNOWN_G71_PROFILE',`Subroutine O${q} is not defined`);Object.assign(state,blockStartState);status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;}
+      const target={x:byLetter.get('X')?.[0] ?? state.position.x!,z:byLetter.get('Z')?.[0] ?? state.position.z!};
+      const profile=resolveLinuxCncProfile(routine,target);
+      if(!profile.ok){warn(sourceLine,'UNSUPPORTED_G71_PROFILE',`Profile line ${profile.sourceLine}: ${profile.message}`);Object.assign(state,blockStartState);status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;}
+      const result=expandLinuxCncG71({cycle:'G71.1',position:{x:state.position.x!,z:state.position.z!},X:target.x,Z:target.z,profile:profile.profile,units:'mm',D:byLetter.get('D')?.[0],I:byLetter.get('I')?.[0],R:byLetter.get('R')?.[0],sourceLine,rawCode});
+      if(!result.ok){warn(sourceLine,result.error.code,`G71 경로를 정확히 확인할 수 없어 이 구간을 그리지 않았습니다. ${result.error.message}`);Object.assign(state,blockStartState);status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;}
+      const prepared:MotionSegment[]=[];let addedVertices=0;
+      for(const [index,move] of result.moves.entries()){
+        const start=toReference({x:move.start.x,y:state.position.y,z:move.start.z}),end=toReference({x:move.end.x,y:state.position.y,z:move.end.z});
+        if(!renderablePosition(start)||!renderablePosition(end)){warn(sourceLine,'FLOAT32_PRECISION_LOSS','G71 coordinates exceed display precision');status='INVALID';stopped=true;break;}
+        if(!move.center && move.end.x===move.start.x && move.end.z===move.start.z)continue;
+        let vertices:Float64Array | undefined;
+        if(move.center){
+          const su=move.start.z-move.center.z,sv=move.start.x-move.center.x,eu=move.end.z-move.center.z,ev=move.end.x-move.center.x;
+          const radius=Math.hypot(su,sv),endRadius=Math.hypot(eu,ev);
+          if(!(radius>0)||Math.abs(radius-endRadius)>.001){warn(sourceLine,'INVALID_G71_ARC','G71 generated an inconsistent arc');status='INVALID';stopped=true;break;}
+          const a0=Math.atan2(sv,su),a1=Math.atan2(ev,eu),sweep=move.motion==='G02'?-normalizeAngle(a0-a1):normalizeAngle(a1-a0);
+          if(Math.abs(sweep)<1e-12){warn(sourceLine,'INVALID_G71_ARC','G71 produced an ambiguous zero-sweep arc');status='INVALID';stopped=true;break;}
+          const sagittaRatio=Math.min(1,ARC_MAX_SAGITTA_MM/radius),step=Math.min(Math.PI/36,2*Math.asin(Math.sqrt(sagittaRatio*(2-sagittaRatio))/2));
+          const count=Math.max(1,Math.ceil(Math.abs(sweep)/step));addedVertices+=count+1;
+          if(count>ARC_MAX_SEGMENTS || totalArcVertices+addedVertices>ARC_MAX_TOTAL_VERTICES){warn(sourceLine,'ARC_VERTEX_BUDGET','G71 arc tessellation exceeds the vertex budget');status='INVALID';stopped=true;break;}
+          vertices=new Float64Array((count+1)*3);
+          for(let i=0;i<=count;i++){const angle=a0+sweep*i/count;const point=toReference({x:i===count?move.end.x:move.center.x+radius*Math.sin(angle),y:state.position.y,z:i===count?move.end.z:move.center.z+radius*Math.cos(angle)});if(!renderablePosition(point)){warn(sourceLine,'FLOAT32_PRECISION_LOSS','G71 arc exceeds display precision');status='INVALID';stopped=true;break;}vertices.set([point.x!,point.y!,point.z!],i*3);}
+          if(stopped)break;
+        }
+        prepared.push({id:`line-${sourceLine}-segment-${index}`,sourceLine,rawCode,motion:move.motion,start,end,...(vertices?{vertices}:{}),unit:state.unit,distanceMode:state.distanceMode,plane:state.plane,status:'SUPPORTED',warningIds:[],...(state.feed!==null?{feed:state.feed}:{}),...(state.tool!==null?{tool:state.tool}:{})});
+      }
+      if(stopped){Object.assign(state,blockStartState);break;}
+      segments.push(...prepared);totalArcVertices+=addedVertices;state.position={...state.position,x:result.finalPosition.x,z:result.finalPosition.z};state.motionMode=null;continue;
     }
 
     if (thread) {
