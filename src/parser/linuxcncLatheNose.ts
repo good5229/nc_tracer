@@ -60,8 +60,13 @@ export function linuxCncLatheNoseLines(start:LatheNosePoint,lines:LatheInputMove
    queuedFirst=moves.length===1;const queued=moves.pop();
    if(bypassed||!queued)return error('UNSUPPORTED_COMP_G70_QUEUE',line.sourceLine);
    if(queued.center||queued.motion==='G02'||queued.motion==='G03'){
-    if(!queued.center||Math.hypot(queued.start.x-line.end.x,queued.start.z-line.end.z)>1e-12)return {ok:false,code:'UNSUPPORTED_COMP_G70_ARC_QUEUE',sourceLine:line.sourceLine,committed:[...moves,{start:queued.start,end:{...line.end},motion:'G00',sourceLine:line.sourceLine}]};
-    queuedArc=queued;moves.push(queued);
+    const reposition={start:queued.start,end:{...line.end},motion:'G00' as const,sourceLine:line.sourceLine};
+    if(!queued.center)return {ok:false,code:'UNSUPPORTED_COMP_G70_ARC_QUEUE',sourceLine:line.sourceLine,committed:[...moves,reposition]};
+    const originalRadius=Math.hypot(queued.start.x-queued.center.x,queued.start.z-queued.center.z),anchorRadius=Math.hypot(line.end.x-queued.center.x,line.end.z-queued.center.z);
+    if(!(originalRadius>0)||Math.abs(anchorRadius-originalRadius)>1e-9*Math.max(1,originalRadius))return {ok:false,code:'UNSUPPORTED_COMP_G70_ARC_QUEUE',sourceLine:line.sourceLine,committed:[...moves,reposition]};
+    queuedArc=queued;
+    if(Math.hypot(queued.start.x-line.end.x,queued.start.z-line.end.z)>1e-12){moves.push(reposition,{...queued,start:{...line.end}});}
+    else moves.push(queued);
    }else moves.push({start:queued.start,end:{...line.end},motion:'G00',sourceLine:line.sourceLine},{...queued,start:{...line.end}});
    queuedOriginalStart={...queued.start};
    center={...line.end};bypassed=true;continue;

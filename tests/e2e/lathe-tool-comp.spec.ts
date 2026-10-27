@@ -41,3 +41,8 @@ test('renders G70 with a supported queued compensated arc',async({page})=>{
  await page.locator('.topbar input[type=file]').setInputFiles({name:'g70-arc-anchor.ngc',mimeType:'text/plain',buffer:readFileSync('tests/fixtures/g70_comp_arc_anchor_left_cw.ngc')});
  await expect(page.locator('.status')).toHaveText('SUPPORTED');await expect(page.locator('.counter')).toContainText('/ 15');await expect(page.getByRole('region',{name:'해석 진단'})).toHaveCount(0);
 });
+test('renders a queued compensated arc after repositioning to another point on it',async({page})=>{
+ await page.goto('/');await page.getByLabel('컨트롤러 프로파일').selectOption('linuxcnc');await page.getByLabel('선반 예제 공구표 사용').check();
+ await page.locator('.topbar input[type=file]').setInputFiles({name:'g70-arc-top.ngc',mimeType:'text/plain',buffer:readFileSync('tests/fixtures/g70_comp_arc_on_top.ngc')});
+ await expect(page.locator('.status')).toHaveText('SUPPORTED');await expect(page.locator('.counter')).toContainText('/ 16');await expect(page.getByRole('region',{name:'해석 진단'})).toHaveCount(0);
+});

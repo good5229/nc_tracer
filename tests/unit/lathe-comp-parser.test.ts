@@ -5,6 +5,7 @@ import reference from '../fixtures/linuxcnc-lathe-comp-reference.json';
 import priorDirections from '../fixtures/linuxcnc-g70-prior-directions.json';
 import twoMoves from '../fixtures/linuxcnc-g70-two-moves.json';
 import arcAnchor from '../fixtures/linuxcnc-g70-arc-anchor.json';
+import arcTop from '../fixtures/linuxcnc-g70-arc-on-top.json';
 const settings={controllerProfile:'linuxcnc' as const,linuxcncLatheToolReference:{tools:{}},initialPosition:{x:0,y:0,z:0},initialDistanceMode:'absolute' as const};
 describe('LinuxCNC explicit lathe compensation profile',()=>{
  for(const name of ['lathe_comp_left','lathe_comp_right','lathe_comp_arc'] as const)it(`matches ${name}`,()=>{
@@ -195,4 +196,23 @@ it.each([['left_ccw','UNSUPPORTED_COMP_G70_ARC_QUEUE'],['right_ccw','UNSUPPORTED
  const table={...settings,linuxcncLatheToolReference:{tools:{'1':{diameter:.4,orientation:2,offsetX:0,offsetZ:0}}}};
  const result=parseGcode(source,table);expect(result.status).toBe('PARTIAL');expect(result.warnings.at(-1)?.code).toBe(code);
  expect(result.segments).toHaveLength(2);expect(result.segments[1].end.x).toBeCloseTo(name.startsWith('left')?9.6:10,4);expect(result.segments[1].end.z).toBeCloseTo(1.8,4);
+});
+
+it('matches LinuxCNC when G70 repositions to a different point on a queued arc',()=>{
+ const source=readFileSync(new URL('../fixtures/g70_comp_arc_on_top.ngc',import.meta.url),'utf8');
+ const table={...settings,linuxcncLatheToolReference:{tools:{'1':{diameter:.4,orientation:2,offsetX:0,offsetZ:0}}}};
+ const result=parseGcode(source,table);expect(result.status).toBe('SUPPORTED');expect(result.warnings).toEqual([]);expect(result.segments).toHaveLength(arcTop.length);
+ result.segments.forEach((segment,i)=>{const expected=arcTop[i];expect(segment.motion,`motion ${i}`).toBe(expected.motion);expect(segment.end.x,`X ${i}`).toBeCloseTo(expected.end[0],4);expect(segment.end.z,`Z ${i}`).toBeCloseTo(expected.end[1],4);if(i)expect(segment.start).toEqual(result.segments[i-1].end);
+  if(expected.center){const center=expected.center,vertices=segment.vertices!;expect(vertices).toBeDefined();const r=Math.hypot(segment.start.x!-center[0],segment.start.z!-center[1]);for(let n=0;n<vertices.length;n+=3)expect(Math.abs(Math.hypot(vertices[n]-center[0],vertices[n+2]-center[1])-r)).toBeLessThan(.0002);}
+ });
+});
+it('refuses a G70 anchor that needs an unmodelled reposition',()=>{
+ const source=readFileSync(new URL('../fixtures/g70_comp_arc_on_bottom.ngc',import.meta.url),'utf8');
+ const table={...settings,linuxcncLatheToolReference:{tools:{'1':{diameter:.4,orientation:2,offsetX:0,offsetZ:0}}}};
+ const result=parseGcode(source,table);expect(result.status).toBe('PARTIAL');expect(result.warnings.at(-1)?.code).toBe('UNSUPPORTED_G70_ANCHOR');
+});
+it.each(['off','right'] as const)('refuses the unverified or inconsistent queued arc at %s',name=>{
+ const source=readFileSync(new URL(`../fixtures/g70_comp_arc_on_${name}.ngc`,import.meta.url),'utf8');
+ const table={...settings,linuxcncLatheToolReference:{tools:{'1':{diameter:.4,orientation:2,offsetX:0,offsetZ:0}}}};
+ const result=parseGcode(source,table);expect(result.status).toBe('PARTIAL');expect(result.warnings.at(-1)?.code).toBe('UNSUPPORTED_COMP_G70_ARC_QUEUE');
 });
