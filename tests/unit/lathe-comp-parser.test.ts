@@ -127,6 +127,9 @@ it('flushes the multipass compensated G70 at M2',()=>{
  const reference=parseGcode(source,table),ended=parseGcode(source.replace(/G40\s+G0 X12\s+M2/,'M2'),table);
  expect(ended.status).toBe('SUPPORTED');expect(ended.warnings).toEqual([]);
  expect(ended.segments.map(s=>[s.motion,s.start,s.end])).toEqual(reference.segments.slice(0,-1).map(s=>[s.motion,s.start,s.end]));
+ // LinuxCNC 2.9.4 run 40518734540, omitting the duplicate no-motion anchor.
+ const canonical=[['G00',10,3],['G00',10,1],['G00',4,.6],['G01',4,-5],['G00',10,1],['G01',9.247,.9843],['G00',4,.1394],['G01',4,-5],['G01',7.8,-5]] as const;
+ expect(ended.segments).toHaveLength(canonical.length);ended.segments.forEach((segment,i)=>{expect(segment.motion).toBe(canonical[i][0]);expect(segment.end.x).toBeCloseTo(canonical[i][1],4);expect(segment.end.z).toBeCloseTo(canonical[i][2],4);});
 });
 it('retains a real gouging failure even when the program ends with M2',()=>{
  const source=readFileSync(new URL('../../demo/lathe_g70_71_demo.ngc',import.meta.url),'utf8');
