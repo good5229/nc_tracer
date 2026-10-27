@@ -127,12 +127,18 @@ test('viewer visibility choices survive path filter rebuilds', async ({page}) =>
  await page.goto('/nc_tracer/');
  await page.locator('.topbar input[type=file]').setInputFiles({name:'visibility.nc',mimeType:'text/plain',buffer:Buffer.from('G21 G90 G00 X0 Y0 Z0\nG00 X30\nG01 Y20\nM30')});
  await expect(page.locator('.counter')).toHaveText('1 / 2');
- await page.getByLabel('G00 급속',{exact:true}).uncheck();
+ const rapid=page.getByLabel('G00 급속',{exact:true});
+ await rapid.uncheck();
  const canvas=page.locator('.viewport canvas');
- await page.evaluate(()=>new Promise<void>(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve()))));
- const before=await canvas.screenshot();
  await page.getByRole('region',{name:'경로 필터 및 통계'}).getByLabel('G02').uncheck();
- await expect.poll(async()=> (await canvas.screenshot()).equals(before)).toBe(true);
+ await expect(rapid).not.toBeChecked();
+ await page.evaluate(()=>new Promise<void>(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve()))));
+ const hidden=await canvas.screenshot();
+ await rapid.check();
+ await expect.poll(async()=> (await canvas.screenshot()).equals(hidden)).toBe(false);
+ const visible=await canvas.screenshot();
+ await rapid.uncheck();
+ await expect.poll(async()=> (await canvas.screenshot()).equals(visible)).toBe(false);
 });
 
 test('replacing an interrupted large drawing restores the selection highlight', async ({browser}) => {
