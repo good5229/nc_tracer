@@ -22,6 +22,8 @@ export type ViewerPlane = 'XY' | 'XZ' | 'YZ';
 
 export interface Viewer3DProps {
   segments: ViewerSegment[];
+  packedPositions?: Float32Array | null;
+  segmentIndices?: ReadonlyMap<string, number>;
   selectedSegmentId?: string | null;
   onSelectSegment?: (segment: ViewerSegment) => void;
   showRapid?: boolean;
@@ -44,6 +46,8 @@ const finitePoint = (p: ViewerPoint): p is { x: number; y: number; z: number } =
 /** Three.js toolpath viewport. Segments with any unknown coordinate are deliberately omitted. */
 export default function Viewer3D({
   segments,
+  packedPositions,
+  segmentIndices,
   selectedSegmentId = null,
   onSelectSegment,
   showRapid: rapidProp = true,
@@ -335,8 +339,14 @@ export default function Viewer3D({
         for (let i = 0; i < segment.vertices.length; i += 3) {
           path.push({ x: segment.vertices[i], y: segment.vertices[i + 1], z: segment.vertices[i + 2] });
         }
+      } else if (segment.vertices?.length) {
+        path = segment.vertices;
       } else {
-        path = segment.vertices?.length ? segment.vertices : [segment.start, segment.end];
+        const index = segmentIndices?.get(segment.id);
+        const offset = index === undefined ? -1 : index * 6;
+        path = packedPositions && offset >= 0 && offset + 5 < packedPositions.length
+          ? [{x:packedPositions[offset],y:packedPositions[offset+1],z:packedPositions[offset+2]}, {x:packedPositions[offset+3],y:packedPositions[offset+4],z:packedPositions[offset+5]}]
+          : [segment.start, segment.end];
       }
       if (path.some((point) => !finitePoint(point))) continue;
       const points = (path as Array<{ x: number; y: number; z: number }>).map((point) => new THREE.Vector3(point.x, point.y, point.z));
@@ -489,7 +499,7 @@ export default function Viewer3D({
       engine.controls.update();
     }
     engine.requestRender();
-  }, [segments]);
+  }, [segments, packedPositions, segmentIndices]);
 
   useEffect(() => {
     const engine = engineRef.current;

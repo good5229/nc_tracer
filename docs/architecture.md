@@ -6,7 +6,7 @@ React + TypeScript strict + Vite + Three.js. 런타임 JS/CSS/필요 자산은 �
 
 로컬 File/붙여넣기 → 인코딩·크기 확인 → 세대 ID로 오래된 응답을 차단하는 Worker 메시지 → tokenizer/모달 interpreter → immutable 파싱 결과·행 인덱스·좌표 buffer → React 진단/코드 패널 + Three.js BufferGeometry → 선택/순서 재생 상태.
 
-원본 텍스트는 현재 탭의 React 메모리에 유지한다. 비교 파일은 별도 컴포넌트의 메모리에만 보관하며 비교 닫기 또는 파일 교체 시 제거한다. Worker는 파일 전환 시 종료/재시작하거나 request ID로 오래된 응답을 버린다. 원호의 Float64 분할 좌표 버퍼는 transferable로 전달한다. 직선 구간 메타데이터와 좌표 객체는 structured clone으로 전달되므로 매우 큰 파일에서는 복제 비용이 남는다. CPU 파싱은 메인 스레드에서 하지 않는다.
+원본 텍스트는 현재 탭의 React 메모리에 유지한다. 비교 파일은 별도 컴포넌트의 메모리에만 보관하며 비교 닫기 또는 파일 교체 시 제거한다. Worker는 파일 전환 시 종료/재시작하거나 request ID로 오래된 응답을 버린다. 각 구간의 Float32 시작·끝 좌표와 원호의 Float64 분할 좌표 버퍼는 transferable로 전달한다. 구간 메타데이터와 좌표 객체는 structured clone으로 전달되므로 매우 큰 파일에서는 복제 비용이 남는다. CPU 파싱은 메인 스레드에서 하지 않는다.
 
 ## 계약
 
