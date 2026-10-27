@@ -400,7 +400,7 @@ function parseCore(text: string, options: ParserOptions, originalSource = text):
     }
 
     if (finish || rough) {
-      if(latheTools){warn(sourceLine,'UNSUPPORTED_REAL_TOOL_CYCLE','실제 공구표를 사용하는 G70/G71 사이클은 아직 지원하지 않습니다.');status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;}
+      if(latheTools && (loadedTool===null || pendingCompExit)){warn(sourceLine,'INVALID_LATHE_CYCLE_TOOL','G70/G71 전에 공구를 장착하고 G40 이후 첫 직선 이동을 완료해야 합니다.');status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;}
       const words=finish ? ['Q','X','Z','D','E','P'] : ['Q','X','Z','D','I','R'];
       const q=byLetter.get('Q')?.[0];
       if (state.plane !== 'XZ' || state.unit !== 'mm' || state.distanceMode !== 'absolute' || !latheRadiusMode || !renderablePosition(state.position) || mWords.length || (finish && gWords.length!==1) || q === undefined || !Number.isInteger(q) || q < 1 || words.some(letter=>(byLetter.get(letter)?.length ?? 0)>1) || byLetter.has('Y') || (finish && ['I','J','K','R'].some(letter=>byLetter.has(letter)))) {

@@ -24,11 +24,28 @@ it('uses the explicitly loaded tool table for G41 and rejects unknown offsets',(
  expect(invalid.status).toBe('PARTIAL');expect(invalid.warnings.at(-1)?.code).toBe('UNSUPPORTED_TOOL_LENGTH');
  expect(parseGcode(source,settings).warnings.at(-1)?.code).toBe('UNKNOWN_LATHE_TOOL');
 });
-it('does not mistake point-tool cycles or an unclosed compensation section for real-tool support',()=>{
+it('requires a loaded tool for cycles and rejects an unclosed compensation section',()=>{
  const cycle=readFileSync(new URL('../fixtures/g70_single.ngc',import.meta.url),'utf8');
- expect(parseGcode(cycle,settings).warnings.at(-1)?.code).toBe('UNSUPPORTED_REAL_TOOL_CYCLE');
+ expect(parseGcode(cycle,settings).warnings.at(-1)?.code).toBe('INVALID_LATHE_CYCLE_TOOL');
  const source=readFileSync(new URL('../fixtures/lathe_comp_left.ngc',import.meta.url),'utf8').replace(/G40[\s\S]*/, '');
  expect(parseGcode(source,settings).warnings.at(-1)?.code).toBe('UNCLOSED_LATHE_COMP');
+});
+it.each(['g70_single','g70_multi','g71_2_pocket','g71_2_double','g70_arc','g71_2_arc'])('retains LinuxCNC cycle paths and the loaded tool for %s',name=>{
+ const source=readFileSync(new URL(`../fixtures/${name}.ngc`,import.meta.url),'utf8');
+ const point=parseGcode(source,{controllerProfile:'linuxcnc',linuxcncPointToolReference:true,initialPosition:{x:0,y:0,z:0},initialDistanceMode:'absolute'});
+ const actual=parseGcode(`T1 M6\n${source}`,{...settings,linuxcncLatheToolReference:{tools:{'1':{diameter:.4,orientation:2,offsetX:0,offsetZ:0}}}});
+ expect(point.status).toBe('SUPPORTED');expect(actual.status).toBe('SUPPORTED');
+ expect(actual.segments.map(s=>[s.motion,s.start,s.end])).toEqual(point.segments.map(s=>[s.motion,s.start,s.end]));
+ expect(actual.segments.every(s=>s.tool===1)).toBe(true);
+});
+it('does not bypass active compensation or the required first move after G40 for a cycle',()=>{
+ const source=readFileSync(new URL('../fixtures/g70_single.ngc',import.meta.url),'utf8');
+ const table={...settings,linuxcncLatheToolReference:{tools:{'1':{diameter:.4,orientation:2,offsetX:0,offsetZ:0}}}};
+ const before=`T1 M6\n${source}`;
+ const active=parseGcode(before.replace('G70 Q100','G41\nG70 Q100'),table);
+ expect(active.warnings.at(-1)?.code).toBe('INVALID_CUTTER_COMP');
+ const noExit=parseGcode(before.replace('G70 Q100','G41\nG1 X8 Z1\nG40\nG70 Q100'),table);
+ expect(noExit.warnings.at(-1)?.code).toBe('INVALID_LATHE_CYCLE_TOOL');
 });
 it('stops the G76 demo at the actual short compensation entry under a positive T1 diameter',()=>{
  const source=readFileSync(new URL('../../demo/lathe-g76.ngc',import.meta.url),'utf8');

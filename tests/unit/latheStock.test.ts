@@ -1,4 +1,5 @@
 import {expect,it} from 'vitest';
+import {readFileSync} from 'node:fs';
 import {parseGcode} from '../../src/parser/gcode';
 import {simulateLatheStock} from '../../src/simulation/latheStock';
 const options={controllerProfile:'linuxcnc' as const,linuxcncLatheToolReference:{tools:{'1':{diameter:.4,orientation:2,offsetX:0,offsetZ:0}}},initialPosition:{x:0,y:0,z:0},initialDistanceMode:'absolute' as const};
@@ -16,4 +17,13 @@ it('stops if the example nose meets stock during a rapid move',()=>{
  const code='G21 G90 G18 G8\nT1 M6\nG43\nG0 X0 Z-3\nM30';
  const parsed=parseGcode(code,options);expect(parsed.status).toBe('SUPPORTED');
  const outcome=simulateLatheStock(parsed,options);expect(outcome.ok).toBe(false);if(!outcome.ok)expect(outcome.message).toContain('급속');
+});
+
+it('uses loaded-tool G70 moves in the example stock calculation',()=>{
+ const source=readFileSync(new URL('../fixtures/g70_single.ngc',import.meta.url),'utf8');
+ const parsed=parseGcode(`T1 M6\n${source}`,options);
+ expect(parsed.status).toBe('SUPPORTED');
+ const outcome=simulateLatheStock(parsed,options);
+ expect(outcome.ok).toBe(true);
+ if(outcome.ok)expect(outcome.removed).toBeGreaterThan(0);
 });
