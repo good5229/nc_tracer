@@ -1,0 +1,12 @@
+(LinuxCNC concave arc to arc with tool nose compensation)
+G18 G8 G21 G90
+G0 X10 Z1
+G41.1 D0.4 L2
+G1 X4 Z1 F100
+G1 X4 Z0
+G2 X6 Z-2 I2 K0
+G3 X7 Z-5 I-1 K-2
+G1 X9 Z-5
+G40
+G0 X11
+M2
