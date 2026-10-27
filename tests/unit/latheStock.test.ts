@@ -144,3 +144,13 @@ it('uses the threading insert length during synchronized cutting',()=>{
  const full=simulateLatheStock(parsed,setup,'round-nose',undefined,false,{}, {'1':{length:2}}),short=simulateLatheStock(parsed,setup,'round-nose',undefined,false,{}, {'1':{length:.3}});
  if(!full.ok)throw new Error(full.message);if(!short.ok)throw new Error(short.message);expect(full.removed).toBeGreaterThan(short.removed);
 });
+it('distinguishes a hypothetical rapid contact at another spindle phase from the frozen-phase preview',()=>{
+ const setup={...options,initialPosition:{x:12,y:0,z:1}};
+ const code='G21 G90 G18 G8\nT1 M6\nG0 X12 Z0\nS500 M3\nG0 X11\nG76 P1.2 Z-5.5 I-1 J.2 K1 R1\nG0 X12\nM2';
+ const parsed=parseGcode(code,setup),cut=parsed.segments.find(s=>s.thread?.kind==='thread-cut')!;
+ const point={x:9.85,y:0,z:-4.9};
+ const rapid={...cut,rawCode:'G76',motion:'G00' as const,start:point,end:point,thread:{...cut.thread!,kind:'approach' as const,synchronized:false,phaseTurnsStart:3/48,phaseTurnsEnd:3/48}};
+ const shape=simulateLatheStock({...parsed,segments:[cut,rapid]},setup);
+ if(!shape.ok)throw new Error(shape.message);
+ expect(shape.phaseUncertainty).toEqual([{sourceLine:cut.sourceLine,kind:'approach'}]);
+});

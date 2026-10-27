@@ -11,7 +11,7 @@ export const LATHE_STOCK_PRESETS:Record<'standard'|'thread-demo'|'pawn-demo',Lat
 };
 /** Coarser independent physical-tool preview for the original zero-table-radius G76 reference. */
 export const THREAD_POINT_PREVIEW_GRID:LatheStockGrid={radius:3.175,zMin:-16.6,zMax:0,step:.2,radialCells:16,axialCells:83,angularSegments:24};
-export type LatheStockResult={ok:true;remaining:Uint8Array;removed:number;angularCells?:number;grid:LatheStockGrid;partial?:boolean;stopLine?:number;stopMessage?:string}|{ok:false;message:string;sourceLine?:number};
+export type LatheStockResult={ok:true;remaining:Uint8Array;removed:number;angularCells?:number;grid:LatheStockGrid;partial?:boolean;stopLine?:number;stopMessage?:string;phaseUncertainty?:{sourceLine:number;kind:string}[]}|{ok:false;message:string;sourceLine?:number};
 export type LatheInsertModel='round-nose'|'example-insert';
 /** Rectangular cutting blade, tip centered at the programmed X/Z point. */
 export type PartingToolShape={width:number;length:number};
@@ -51,9 +51,9 @@ export function simulateLatheStock(result:ParseResult,options:ParserOptions,mode
  if(result.segments.some(s=>/\bG\s*0*76(?:\D|$)/i.test(s.rawCode)&&!s.thread))return {ok:false,message:'나사 가공의 동기화 정보를 확인할 수 없습니다.'};
  const {radialCells:nr,axialCells:nz,step,zMin,angularSegments}=grid;
  if(![grid.radius,grid.zMin,grid.zMax,step,nr,nz,angularSegments].every(Number.isFinite)||!(grid.radius>0)||!(step>0)||!(grid.zMax>grid.zMin)||![nr,nz,angularSegments].every(Number.isInteger)||nr<1||nz<1||angularSegments<3||nr*nz*angularSegments>1_000_000||Math.abs(nr-Math.ceil(grid.radius/step))>0||Math.abs(nz*step-(grid.zMax-grid.zMin))>1e-8)return {ok:false,message:'예제 소재 격자 설정이 유효하지 않습니다.'};
- const angular=result.segments.some(s=>s.thread)?angularSegments:1,remaining=new Uint8Array(nr*nz*angular).fill(1);let removed=0,work=0;
+ const angular=result.segments.some(s=>s.thread)?angularSegments:1,remaining=new Uint8Array(nr*nz*angular).fill(1),phaseUncertainty:{sourceLine:number;kind:string}[]=[];let removed=0,work=0;
  const index=(r:number,z:number,a:number)=>(z*nr+r)*angular+a;
- const collision=(message:string,sourceLine:number):LatheStockResult=>partial?{ok:true,remaining,removed,grid,partial:true,stopLine:sourceLine,stopMessage:message,...(angular>1?{angularCells:angular}:{})}:{ok:false,message,sourceLine};
+ const collision=(message:string,sourceLine:number):LatheStockResult=>partial?{ok:true,remaining,removed,grid,partial:true,stopLine:sourceLine,stopMessage:message,...(phaseUncertainty.length?{phaseUncertainty}:{}),...(angular>1?{angularCells:angular}:{})}:{ok:false,message,sourceLine};
  for(let r=0;r<nr;r++)if((r+.5)*step>grid.radius)for(let z=0;z<nz;z++)for(let a=0;a<angular;a++)remaining[index(r,z,a)]=0;
  for(const segment of result.segments){
   if(!finite(segment.start)||!finite(segment.end)||segment.start.y!==0||segment.end.y!==0||segment.plane!=='XZ')return {ok:false,message:'X/Z 평면의 완전히 알려진 경로만 계산합니다.',sourceLine:segment.sourceLine};
@@ -89,7 +89,13 @@ export function simulateLatheStock(result:ParseResult,options:ParserOptions,mode
     const fraction=((-t.spindleDirection*t.phaseTurnsStart)%1+1)%1;
     const angle=Math.min(angular-1,Math.floor(fraction*angular));
     const polygon=sweptPolygon(a,b,[{x:0,z:0},{x:length,z:-length*tan30},{x:length,z:length*tan30}]);
-    for(let z=0;z<nz;z++)for(let r=0;r<nr;r++){const cell=index(r,z,angle);if(remaining[cell]&&insideConvex({x:(r+.5)*step,z:zMin+(z+.5)*step},polygon))return collision(`나사 공구의 급속 ${t.kind==='approach'?'진입':t.kind==='retract'?'이탈':'위치'} 이동이 예제 소재에 접촉해 계산을 중단했습니다.`,segment.sourceLine);}
+    let otherPhaseContact=false;
+    for(let z=0;z<nz;z++)for(let r=0;r<nr;r++){
+     if(!insideConvex({x:(r+.5)*step,z:zMin+(z+.5)*step},polygon))continue;
+     if(remaining[index(r,z,angle)])return collision(`나사 공구의 급속 ${t.kind==='approach'?'진입':t.kind==='retract'?'이탈':'위치'} 이동이 예제 소재에 접촉해 계산을 중단했습니다.`,segment.sourceLine);
+     if(!otherPhaseContact)for(let candidate=0;candidate<angular;candidate++)if(candidate!==angle&&remaining[index(r,z,candidate)]){otherPhaseContact=true;break;}
+    }
+    if(otherPhaseContact&&!phaseUncertainty.some(item=>item.sourceLine===segment.sourceLine&&item.kind===t.kind))phaseUncertainty.push({sourceLine:segment.sourceLine,kind:t.kind});
    }
    continue;
   }
@@ -106,5 +112,5 @@ export function simulateLatheStock(result:ParseResult,options:ParserOptions,mode
    }
   }
  }
- return {ok:true,remaining,removed,grid,...(partial?{partial:true,stopLine:result.warnings[0].sourceLine,stopMessage:result.warnings[0].message}:{}),...(angular>1?{angularCells:angular}:{})};
+ return {ok:true,remaining,removed,grid,...(partial?{partial:true,stopLine:result.warnings[0].sourceLine,stopMessage:result.warnings[0].message}:{}),...(phaseUncertainty.length?{phaseUncertainty}:{}),...(angular>1?{angularCells:angular}:{})};
 }
