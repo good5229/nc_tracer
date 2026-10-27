@@ -94,6 +94,7 @@ export function parseGcode(text: string, options: ParserOptions = {}): ParseResu
   };
   let status: ValidationStatus = 'SUPPORTED';
   let stopped = false;
+  let programEndIndex: number | null = null;
   const warn = (sourceLine: number, code: string, message: string) => {
     const id = `warning-${sourceLine}-${warnings.length}`;
     warnings.push({ id, sourceLine, code, message });
@@ -225,8 +226,27 @@ export function parseGcode(text: string, options: ParserOptions = {}): ParseResu
         status = 'PARTIAL';
       }
     }
-    if (mWords.includes(2) || mWords.includes(30)) stopped = true;
+    if (mWords.includes(2) || mWords.includes(30)) {
+      programEndIndex = index;
+      stopped = true;
+    }
   }
-  if (stopped && status !== 'SUPPORTED') state.position = unknownPosition();
+  if (programEndIndex !== null) {
+    for (let index = programEndIndex + 1; index < lines.length; index += 1) {
+      if (lines[index].trim() === '%') continue;
+      let hasCode: boolean;
+      try {
+        hasCode = stripComments(lines[index]).trim().length > 0;
+      } catch {
+        // After the program end, malformed or ambiguous text still deserves a diagnostic.
+        hasCode = lines[index].trim().length > 0;
+      }
+      if (!hasCode) continue;
+      warn(index + 1, 'CODE_AFTER_PROGRAM_END', 'Code after M2/M30 is ignored');
+      status = 'PARTIAL';
+      break;
+    }
+  }
+  if (stopped && status !== 'SUPPORTED' && programEndIndex === null) state.position = unknownPosition();
   return { status, segments, warnings, finalState: state };
 }

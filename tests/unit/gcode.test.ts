@@ -93,6 +93,23 @@ describe('parseGcode', () => {
     }
   });
 
+  it('diagnoses code after M2/M30 but ignores blank, comment, and percent rows', () => {
+    const result = parseGcode('G21 G90 G00 X0 Y0 Z0\nM30\n\n(footer comment)\n%\nG01 X10 Y0 Z0\nG01 X20 Y0 Z0', {
+      initialPosition: origin,
+    });
+    expect(result.status).toBe('PARTIAL');
+    expect(result.segments).toHaveLength(0);
+    expect(result.warnings).toHaveLength(1);
+    expect(result.warnings[0]).toMatchObject({ sourceLine: 6, code: 'CODE_AFTER_PROGRAM_END' });
+    expect(result.finalState.position).toEqual(origin);
+  });
+
+  it('accepts M02 and does not warn when only comments and blank rows follow', () => {
+    const result = parseGcode('G21 G90 G00 X0 Y0 Z0\nM02\n; end\n(footer)\n%\n', { initialPosition: origin });
+    expect(result.status).toBe('SUPPORTED');
+    expect(result.warnings).toHaveLength(0);
+  });
+
   it('marks an unknown modal move as partial and does not invent a position', () => {
     const result = parseGcode('X10 Y20 Z30');
     expect(result.status).toBe('UNSUPPORTED');
