@@ -68,6 +68,8 @@ test('shows the original pawn reference until its first example-stock collision'
  const region=page.getByRole('region',{name:'선반 예제 소재 형상'});await region.getByRole('button',{name:'중단 전 형상 계산'}).click();
  await expect(region.getByRole('status')).toContainText('중단 전 예상 형상 (완성 형상 아님)');await expect(region.getByRole('status')).toContainText('급속 이동');
  await expect(region.getByLabel('선반 예제 소재 3D 표시')).toBeVisible();
+ await region.getByLabel('단면 격자 간격').selectOption('0.1');await expect(region.getByRole('status')).toContainText('행 30에서 중단');await expect(region).toContainText('0.1mm 단면 격자');
+ await region.getByLabel('단면 격자 간격').selectOption('0.05');await expect(region.getByRole('status')).toContainText('행 28에서 중단');await expect(region).toContainText('0.05mm 단면 격자');await expect(region.getByLabel('선반 예제 소재 3D 표시')).toBeVisible();
 });
 test('shows the complete original G76 path with an explicitly different physical tool assumption',async({page})=>{
  await page.goto('/');await page.getByLabel('LinuxCNC 데모').selectOption('lathe-g76.ngc');

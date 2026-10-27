@@ -52,8 +52,9 @@ export function simulateLatheStock(result:ParseResult,options:ParserOptions,mode
  if(!result.segments.length)return {ok:false,message:'계산할 선반 이동 경로가 없습니다.'};
  if(result.segments.some(s=>/\bG\s*0*76(?:\D|$)/i.test(s.rawCode)&&!s.thread))return {ok:false,message:'나사 가공의 동기화 정보를 확인할 수 없습니다.'};
  const {radialCells:nr,axialCells:nz,step,zMin,angularSegments}=grid;
- if(![grid.radius,grid.zMin,grid.zMax,step,nr,nz,angularSegments].every(Number.isFinite)||!(grid.radius>0)||!(step>0)||!(grid.zMax>grid.zMin)||![nr,nz,angularSegments].every(Number.isInteger)||nr<1||nz<1||angularSegments<3||nr*nz*angularSegments>1_000_000||Math.abs(nr-Math.ceil(grid.radius/step))>0||Math.abs(nz*step-(grid.zMax-grid.zMin))>1e-8)return {ok:false,message:'예제 소재 격자 설정이 유효하지 않습니다.'};
- const angular=result.segments.some(s=>s.thread)?angularSegments:1,remaining=new Uint8Array(nr*nz*angular).fill(1),phaseUncertainty:{sourceLine:number;kind:string}[]=[];let removed=0,work=0;
+ const angular=result.segments.some(s=>s.thread)?angularSegments:1;
+ if(![grid.radius,grid.zMin,grid.zMax,step,nr,nz,angularSegments].every(Number.isFinite)||!(grid.radius>0)||!(step>0)||!(grid.zMax>grid.zMin)||![nr,nz,angularSegments].every(Number.isInteger)||nr<1||nz<1||angularSegments<3||nr*nz*angular>1_000_000||nr*nz*angularSegments>16_000_000||Math.abs(nr-Math.ceil(grid.radius/step))>0||Math.abs(nz*step-(grid.zMax-grid.zMin))>1e-8)return {ok:false,message:'예제 소재 격자 설정이 유효하지 않습니다.'};
+ const remaining=new Uint8Array(nr*nz*angular).fill(1),phaseUncertainty:{sourceLine:number;kind:string}[]=[];let removed=0,work=0;
  const index=(r:number,z:number,a:number)=>(z*nr+r)*angular+a;
  const collision=(message:string,sourceLine:number):LatheStockResult=>partial?{ok:true,remaining,removed,grid,partial:true,stopLine:sourceLine,stopMessage:message,...(phaseUncertainty.length?{phaseUncertainty}:{}),...(angular>1?{angularCells:angular}:{})}:{ok:false,message,sourceLine};
  for(let r=0;r<nr;r++)if((r+.5)*step>grid.radius)for(let z=0;z<nz;z++)for(let a=0;a<angular;a++)remaining[index(r,z,a)]=0;
@@ -110,12 +111,24 @@ export function simulateLatheStock(result:ParseResult,options:ParserOptions,mode
   const radius=tool.diameter/2,shift=blade||threadTool?{x:0,z:0}:latheNoseOriginOffset(tool.orientation,radius),points:Point[]=[];
   if(segment.vertices){for(let i=0;i<segment.vertices.length;i+=3){if(segment.vertices[i+1]!==0)return {ok:false,message:'Y축이 포함된 선반 경로는 지원하지 않습니다.',sourceLine:segment.sourceLine};points.push({x:segment.vertices[i]-shift.x,z:segment.vertices[i+2]-shift.z});}}
   else points.push({x:segment.start.x!-shift.x,z:segment.start.z!-shift.z},{x:segment.end.x!-shift.x,z:segment.end.z!-shift.z});
-  // Ordinary turning first scans the X/Z section. Angular cells are only
-  // visited when that section intersects the tool; charging every angle for
-  // every empty section cell needlessly rejects fine threaded-stock grids.
-  work+=(points.length-1)*nr*nz*(model==='example-insert'||blade||threadTool?8:1);if(work>120_000_000)return {ok:false,message:'선반 형상 계산 범위를 초과했습니다.'};
   for(let i=1;i<points.length;i++){const polygon=blade?sweptPolygon(points[i-1],points[i],[{x:0,z:-blade.width/2},{x:blade.length,z:-blade.width/2},{x:blade.length,z:blade.width/2},{x:0,z:blade.width/2}]):!threadTool&&model==='example-insert'?sweptInsert(points[i-1],points[i],radius):[];
-   for(let z=0;z<nz;z++)for(let r=0;r<nr;r++){
+   let r0=0,r1=nr-1,z0=0,z1=nz-1;
+   if(!blade&&!threadTool&&radius>=1e-4){
+    // Conservative X/Z bounds for the swept round nose and insert. Both
+    // positive and negative X correspond to the same stock radius.
+    const a=points[i-1],b=points[i],eps=1e-7;
+    const minX=Math.min(a.x-radius,b.x-radius,...polygon.map(p=>p.x))-eps;
+    const maxX=Math.max(a.x+radius,b.x+radius,...polygon.map(p=>p.x))+eps;
+    const minZ=Math.min(a.z-radius,b.z-radius,...polygon.map(p=>p.z))-eps;
+    const maxZ=Math.max(a.z+radius,b.z+radius,...polygon.map(p=>p.z))+eps;
+    const minR=minX<=0&&maxX>=0?0:Math.min(Math.abs(minX),Math.abs(maxX));
+    const maxR=Math.max(Math.abs(minX),Math.abs(maxX));
+    r0=Math.max(0,Math.ceil(minR/step-.5));r1=Math.min(nr-1,Math.floor(maxR/step-.5));
+    z0=Math.max(0,Math.ceil((minZ-zMin)/step-.5));z1=Math.min(nz-1,Math.floor((maxZ-zMin)/step-.5));
+   }
+   work+=Math.max(0,r1-r0+1)*Math.max(0,z1-z0+1)*(model==='example-insert'||blade||threadTool?8:1);
+   if(work>120_000_000)return {ok:false,message:'선반 형상 계산 범위를 초과했습니다.'};
+   for(let z=z0;z<=z1;z++)for(let r=r0;r<=r1;r++){
    const x=(r+.5)*step,pointZ=zMin+(z+.5)*step;
    if((threadTool&&[x,-x].some(radial=>sweptThreadToolContains({x:radial,z:pointZ},points[i-1],points[i],threadTool.length,(threadTool.includedAngleDegrees??60)*Math.PI/360,threadTool.tipRadius??0))) || (!blade&&!threadTool&&Math.min(distanceSquared({x,z:pointZ},points[i-1],points[i]),distanceSquared({x:-x,z:pointZ},points[i-1],points[i]))<=radius*radius) || (polygon.length>0 && (insideConvex({x,z:pointZ},polygon)||insideConvex({x:-x,z:pointZ},polygon)))){
     work+=angular;if(work>120_000_000)return {ok:false,message:'선반 형상 계산 범위를 초과했습니다.'};
