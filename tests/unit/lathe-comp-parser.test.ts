@@ -117,6 +117,11 @@ it('stops the G76 demo at the actual short compensation entry under a positive T
  expect(result.status).toBe('PARTIAL');expect(result.warnings.at(-1)?.code).toBe('ENTRY_TOO_SHORT');
  expect(result.warnings.at(-1)?.sourceLine).toBe(source.split(/\r?\n/).findIndex(line=>line.trim().toLowerCase()==='g0z1')+1);
 });
+it('does not interpret G76 D as a LinuxCNC 2.9.4 spindle angle',()=>{
+ const source='G18 G8 G21 G90\nT1 M6\nG0 X10 Z1\nS800 M3\nG76 P1 Z-5 I-.5 J.1 K.3 D120\nM2';
+ const result=parseGcode(source,{controllerProfile:'linuxcnc',linuxcncPointToolReference:true,initialPosition:{x:0,y:0,z:0},initialDistanceMode:'absolute'});
+ expect(result.status).toBe('PARTIAL');expect(result.warnings.at(-1)?.code).toBe('UNSUPPORTED_THREAD_D');expect(result.segments.some(s=>s.thread)).toBe(false);
+});
 it('rejects G76 while cutter compensation is active',()=>{
  const source='G18 G8 G21 G90\nT1 M6\nG0 X10 Z1\nS800 M3\nG41.1 D.4 L2\nG76 P1 Z-5 I-.5 J.1 K.3\nM2';
  const table={...settings,linuxcncLatheToolReference:{tools:{'1':{diameter:.4,orientation:2,offsetX:0,offsetZ:0}}}};

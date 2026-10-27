@@ -497,6 +497,7 @@ function parseCore(text: string, options: ParserOptions, originalSource = text):
     }
 
     if (thread) {
+      if(byLetter.has('D')){warn(sourceLine,'UNSUPPORTED_THREAD_D','LinuxCNC 2.9.4의 G76은 D를 나사 시작 위상으로 정의하지 않습니다. 해당 명령에서 해석을 중단했습니다.');Object.assign(state,blockStartState);status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;}
       if(cutterCompActive){warn(sourceLine,'INVALID_THREAD_COMP','LinuxCNC에서는 공구 반경 보정이 켜진 상태로 G76을 실행할 수 없습니다.');Object.assign(state,blockStartState);status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;}
       const required = ['P','Z','I','J','K'];
       const words = ['P','Z','I','J','K','R','Q','H','E','L','D'];

@@ -45,7 +45,7 @@ export type LinuxCncG76Input = {
   K: number;
   /** LinuxCNC G7 diameter mode halves I/J/K internally. */
   diameterMode?: boolean;
-  /** Optional LinuxCNC words: defaults R1, Q0, H0, E0, L0, $0, D0. */
+  /** Optional LinuxCNC 2.9.4 words: defaults R1, Q0, H0, E0, L0, $0. */
   R?: number;
   Q?: number;
   H?: number;
@@ -76,6 +76,9 @@ export function expandLinuxCncG76(input: LinuxCncG76Input): LinuxCncG76Result {
     return fail('NON_FINITE_INPUT', 'G76 coordinates and words must be finite and sourceLine must be a positive integer.');
   }
   if (!input.rawCode.trim()) return fail('MISSING_SOURCE', 'rawCode is required to retain the originating G76 block.');
+  // LinuxCNC 2.9.4 G76 does not define a D start-angle offset. Do not
+  // silently import that later dialect's meaning into the 2.9 reference.
+  if (input.D !== undefined) return fail('UNSUPPORTED_THREAD_D', 'LinuxCNC 2.9.4 G76 does not define a D start-angle offset.');
   if (input.P <= 0) return fail('INVALID_PITCH', 'G76 P must be a positive distance per spindle revolution.');
   if (input.I === 0) return fail('INVALID_THREAD_PEAK', 'G76 I must not be zero.');
   if (input.J <= 0) return fail('INVALID_INITIAL_DEPTH', 'G76 J must be greater than zero.');
@@ -165,5 +168,5 @@ export function expandLinuxCncG76(input: LinuxCncG76Input): LinuxCncG76Result {
     if (!append('G00', 'retract', at(backX, targetZ - zoff))) return fail('MOVE_LIMIT', 'G76 expanded path exceeded its move or coordinate limit.');
   }
   if (!append('G00', 'cycle-return', { x: start.x, y: start.y, z: endZ })) return fail('MOVE_LIMIT', 'G76 expanded path exceeded its move or coordinate limit.');
-  return { ok: true, moves, finalPosition: { x: start.x, y: start.y, z: endZ }, spindle: optional.spindle, spindleIndexOffsetDegrees: Math.abs(optional.D), passDepths };
+  return { ok: true, moves, finalPosition: { x: start.x, y: start.y, z: endZ }, spindle: optional.spindle, spindleIndexOffsetDegrees: 0, passDepths };
 }

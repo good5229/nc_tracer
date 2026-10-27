@@ -51,12 +51,17 @@ describe('expandLinuxCncG76', () => {
     expect(result.moves.filter((move) => move.kind === 'thread-cut')).toHaveLength(result.passDepths.length);
   });
 
+  it('does not assign later-dialect D start angles to LinuxCNC 2.9.4', () => {
+    expect(expandLinuxCncG76({...base,D:120})).toMatchObject({ok:false,error:{code:'UNSUPPORTED_THREAD_D'}});
+    expect(expandLinuxCncG76({...base,D:0})).toMatchObject({ok:false,error:{code:'UNSUPPORTED_THREAD_D'}});
+  });
+
   it('emits entry and exit tapers and honors spring passes and spindle selection', () => {
-    const result = expandLinuxCncG76({ ...base, E: 1, L: 3, Q: 29.5, H: 2, spindle: 1, D: -120 });
+    const result = expandLinuxCncG76({ ...base, E: 1, L: 3, Q: 29.5, H: 2, spindle: 1 });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.spindle).toBe(1);
-    expect(result.spindleIndexOffsetDegrees).toBe(120);
+    expect(result.spindleIndexOffsetDegrees).toBe(0);
     expect(result.passDepths.slice(-3)).toEqual([0.8, 0.8, 0.8]);
     expect(result.moves.filter((move) => move.kind === 'entry-taper')).toHaveLength(result.passDepths.length);
     expect(result.moves.filter((move) => move.kind === 'exit-taper')).toHaveLength(result.passDepths.length);
