@@ -427,6 +427,7 @@ function parseCore(text: string, options: ParserOptions, originalSource = text):
       const target={x:byLetter.get('X')?.[0] ?? state.position.x!,z:byLetter.get('Z')?.[0] ?? state.position.z!};
       const profile=resolveLinuxCncProfile(routine,target);
       if(!profile.ok){warn(sourceLine,finish?'UNSUPPORTED_G70_PROFILE':'UNSUPPORTED_G71_PROFILE',`Profile line ${profile.sourceLine}: ${profile.message}`);Object.assign(state,blockStartState);status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;}
+      if(finish && latheComp && profile.profile.length && target.z<profile.profile[0].end.z){warn(sourceLine,'UNSUPPORTED_G70_ANCHOR','보정 중 G70 시작점에서 추가 급속 이동이 필요한 경로는 아직 지원하지 않습니다.');Object.assign(state,blockStartState);status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;}
       const common={position:{x:state.position.x!,z:state.position.z!},X:target.x,Z:target.z,profile:profile.profile,units:'mm' as const,D:byLetter.get('D')?.[0],sourceLine,rawCode,controllerEmulation:options.linuxcncPawnContourReference===true};
       const result=finish ? expandLinuxCncG70({...common,E:byLetter.get('E')?.[0],P:byLetter.get('P')?.[0]}) : expandLinuxCncG71({...common,cycle:gWords.includes(71.2)?'G71.2':'G71.1',I:byLetter.get('I')?.[0],R:byLetter.get('R')?.[0]});
       if(!result.ok){warn(sourceLine,result.error.code,`${finish?'G70':'G71'} 경로를 정확히 확인할 수 없어 이 구간을 그리지 않았습니다. ${result.error.message}`);Object.assign(state,blockStartState);status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;}

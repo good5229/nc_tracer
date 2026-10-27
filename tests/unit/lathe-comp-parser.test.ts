@@ -6,6 +6,7 @@ import priorDirections from '../fixtures/linuxcnc-g70-prior-directions.json';
 import twoMoves from '../fixtures/linuxcnc-g70-two-moves.json';
 import arcAnchor from '../fixtures/linuxcnc-g70-arc-anchor.json';
 import arcTop from '../fixtures/linuxcnc-g70-arc-on-top.json';
+import anchors from '../fixtures/linuxcnc-g70-anchors.json';
 const settings={controllerProfile:'linuxcnc' as const,linuxcncLatheToolReference:{tools:{}},initialPosition:{x:0,y:0,z:0},initialDistanceMode:'absolute' as const};
 describe('LinuxCNC explicit lathe compensation profile',()=>{
  for(const name of ['lathe_comp_left','lathe_comp_right','lathe_comp_arc'] as const)it(`matches ${name}`,()=>{
@@ -215,4 +216,16 @@ it.each(['off','right'] as const)('refuses the unverified or inconsistent queued
  const source=readFileSync(new URL(`../fixtures/g70_comp_arc_on_${name}.ngc`,import.meta.url),'utf8');
  const table={...settings,linuxcncLatheToolReference:{tools:{'1':{diameter:.4,orientation:2,offsetX:0,offsetZ:0}}}};
  const result=parseGcode(source,table);expect(result.status).toBe('PARTIAL');expect(result.warnings.at(-1)?.code).toBe('UNSUPPORTED_COMP_G70_ARC_QUEUE');
+});
+
+it.each(['below','far','allowance','above'] as const)('matches the LinuxCNC G70 start reposition with compensation off for %s',name=>{
+ const source=readFileSync(new URL(`../fixtures/g70_anchor_${name}.ngc`,import.meta.url),'utf8');
+ const point={controllerProfile:'linuxcnc' as const,linuxcncPointToolReference:true,initialPosition:{x:0,y:0,z:0},initialDistanceMode:'absolute' as const};
+ const result=parseGcode(source,point),expected=anchors[name];expect(result.status).toBe('SUPPORTED');expect(result.warnings).toEqual([]);expect(result.segments).toHaveLength(expected.length);
+ result.segments.forEach((s,i)=>{expect(s.motion).toBe(expected[i].motion);expect(s.end.x).toBeCloseTo(expected[i].end[0],4);expect(s.end.z).toBeCloseTo(expected[i].end[1],4);if(i)expect(s.start).toEqual(result.segments[i-1].end);});
+});
+it('refuses unverified non-rapid profile entry below the first point',()=>{
+ const source=readFileSync(new URL('../fixtures/g70_anchor_below.ngc',import.meta.url),'utf8').replace('G0 X4 Z1','G1 X4 Z1');
+ const point={controllerProfile:'linuxcnc' as const,linuxcncPointToolReference:true,initialPosition:{x:0,y:0,z:0},initialDistanceMode:'absolute' as const};
+ expect(parseGcode(source,point).warnings.at(-1)?.code).toBe('UNSUPPORTED_G70_ANCHOR');
 });

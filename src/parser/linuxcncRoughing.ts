@@ -341,9 +341,7 @@ export function expandLinuxCncG70(input: Omit<RoughCycleInput, 'cycle' | 'I' | '
   if(!input.controllerEmulation && input.profile.some(s=>s.corner)) return fail('UNSUPPORTED_G70_PROFILE','G70 A/C corner finishing is not yet verified.');
   const target={x:input.X??input.position.x,z:input.Z??input.position.z};
   if(!finite(target) || input.profile.some(s=>!finite(s.end) || (s.corner && (!Number.isFinite(s.corner.amount)||s.corner.amount<0)))) return fail('INVALID_G70_PROFILE','G70 profile has invalid coordinates or corner parameters.');
-  // LinuxCNC can insert an additional rapid when the anchor lies below the
-  // first contour point. This expansion does not yet model that reposition.
-  if(target.z<input.profile[0].end.z-TOL)return fail('UNSUPPORTED_G70_ANCHOR','G70 anchor below the first profile point requires an additional controller reposition.');
+  if(target.z<input.profile[0].end.z-TOL&&input.profile[0].motion!=='G00')return fail('UNSUPPORTED_G70_ANCHOR','G70 anchor below a non-rapid first profile point is not verified.');
   const origin=mul(toP(input.position),scale), start=mul(toP(target),scale), moves:RoughMove[]=[];
   let machinePosition=origin, unitScale=1;
   const emit=(motion:RoughMotion,end:P,meta?:RoughProfileSegment,center?:P)=>{
@@ -360,8 +358,10 @@ export function expandLinuxCncG70(input: Omit<RoughCycleInput, 'cycle' | 'I' | '
     if(!(extent>0)||!Number.isFinite(extent))return fail('INVALID_G70_PROFILE','G70 profile extent is not finite.');
     const unit=2**(6-(Math.floor(Math.log2(extent))+1));unitScale=unit;machinePosition=mul(origin,unit);
     path=path.map(s=>{const clone=structuredClone(s);clone.a=mul(clone.a,unit);clone.b=mul(clone.b,unit);clone.finish*=unit;if(clone.kind==='arc')clone.c=mul(clone.c,unit);return clone;});
-    const anchor=mul(start,unit);path[0].a=anchor;path=applyCornerFillets(path,scale*unit,input.controllerEmulation);
+    const requestedAnchor=mul(start,unit),anchor={...requestedAnchor,z:Math.max(requestedAnchor.z,path[0].b.z)};
+    path[0].a=anchor;path=applyCornerFillets(path,scale*unit,input.controllerEmulation);
     if(path.length<2 || path.some(s=>!monotonic(s)))return fail('UNSUPPORTED_G70_PROFILE','G70 contour is non-monotonic in Z.');
+    emit('G00',requestedAnchor,path[0].meta);
     for(let pass=passes;pass>0;pass--){
       const distance=((pass-1)*(d-e)/passes+e)*scale*unit;
       if(!Number.isFinite(distance))throw new Error('G70 allowance is not finite.');
