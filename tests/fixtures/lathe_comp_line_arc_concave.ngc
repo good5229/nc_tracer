@@ -1,0 +1,10 @@
+(LinuxCNC non-tangent convex corners around a lathe arc)
+G18 G8 G21 G90
+G0 X10 Z1
+G42.1 D0.4 L2
+G1 X4 Z0 F100
+G2 X6 Z-2 I2 K0
+G1 X10 Z-2
+G40
+G0 X11
+M2
