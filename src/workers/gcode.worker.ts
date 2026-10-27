@@ -9,5 +9,8 @@ self.onmessage = (event: MessageEvent<GcodeWorkerRequest>) => {
     type: 'result',
     result: parseGcode(event.data.text, event.data.options),
   };
-  self.postMessage(response);
+  const transfers = response.result.segments.flatMap((segment) =>
+    segment.vertices ? [segment.vertices.buffer] : [],
+  );
+  self.postMessage(response, transfers);
 };

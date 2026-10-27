@@ -28,8 +28,8 @@ export type MotionSegment = {
   unit: ModalState['unit'];
   distanceMode: ModalState['distanceMode'];
   plane: ModalState['plane'];
-  /** Ordered tessellation points, including start and end, for a source arc move. */
-  vertices?: Vector3[];
+  /** Ordered XYZ tessellation coordinates, including start and end, for a source arc move. */
+  vertices?: Float64Array;
 };
 export type ParseResult = {
   status: ValidationStatus;
@@ -292,7 +292,7 @@ export function parseGcode(text: string, options: ParserOptions = {}): ParseResu
           warn(sourceLine, 'ARC_TESSELLATION_LIMIT', `Arc requires more than ${ARC_MAX_SEGMENTS} vertices to stay within ${ARC_MAX_SAGITTA_MM} mm sagitta tolerance`);
           Object.assign(state, blockStartState); status = 'INVALID'; stopped = true; break;
         }
-        const vertices: Vector3[] = [];
+        const vertices = new Float64Array((count + 1) * 3);
         for (let i = 0; i <= count; i += 1) {
           const fraction = i / count, angle = Math.atan2(start[arc.axes.v]! - arc.centerV, start[arc.axes.u]! - arc.centerU) + arc.sweep * fraction;
           const point = { ...start };
@@ -303,7 +303,9 @@ export function parseGcode(text: string, options: ParserOptions = {}): ParseResu
             warn(sourceLine, 'CALCULATION_OVERFLOW', 'Arc tessellation exceeded the supported Float32 range');
             Object.assign(state, blockStartState); status = 'INVALID'; stopped = true; break;
           }
-          vertices.push(point);
+          vertices[i * 3] = point.x!;
+          vertices[i * 3 + 1] = point.y!;
+          vertices[i * 3 + 2] = point.z!;
         }
         if (stopped) break;
         state.position = end;

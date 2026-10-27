@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { parseGcode } from '../../src/parser/gcode';
+import type { Vector3 } from '../../src/parser/gcode';
 
 const origin = { x: 0, y: 0, z: 0 };
+const vertexAt = (vertices: Float64Array, index: number): Vector3 => ({
+  x: vertices[index * 3], y: vertices[index * 3 + 1], z: vertices[index * 3 + 2],
+});
 
 describe('parseGcode', () => {
   it('keeps startup modes and coordinates unknown until the program declares them', () => {
@@ -94,17 +98,21 @@ describe('parseGcode', () => {
     expect(result.status).toBe('SUPPORTED');
     expect(result.segments).toHaveLength(1);
     expect(arc).toMatchObject({ motion: 'G03', start: { x: 1, y: 0, z: 0 }, end: { x: 0, y: 1, z: 0 }, rawCode: 'G21 G90 G17 G03 X0 Y1 I-1 J0' });
-    const middle = arc.vertices![Math.floor((arc.vertices!.length - 1) / 2)];
+    expect(arc.vertices).toBeInstanceOf(Float64Array);
+    expect(arc.vertices!.length % 3).toBe(0);
+    const middle = vertexAt(arc.vertices!, Math.floor((arc.vertices!.length / 3 - 1) / 2));
     expect(middle.x).toBeCloseTo(Math.SQRT1_2, 5);
     expect(middle.y).toBeCloseTo(Math.SQRT1_2, 5);
-    const polylineLength = arc.vertices!.slice(1).reduce((length, point, index) => {
-      const previous = arc.vertices![index];
-      return length + Math.hypot(point.x! - previous.x!, point.y! - previous.y!, point.z! - previous.z!);
-    }, 0);
+    const pointCount = arc.vertices!.length / 3;
+    let polylineLength = 0;
+    for (let index = 1; index < pointCount; index += 1) {
+      const point = vertexAt(arc.vertices!, index), previous = vertexAt(arc.vertices!, index - 1);
+      polylineLength += Math.hypot(point.x! - previous.x!, point.y! - previous.y!, point.z! - previous.z!);
+    }
     expect(polylineLength).toBeCloseTo(Math.PI / 2, 3);
 
     const clockwise = parseGcode('G21 G90 G17 G02 X-1 I-1 J0', { initialPosition: { x: 1, y: 0, z: 0 } }).segments[0];
-    const cwMid = clockwise.vertices![Math.floor((clockwise.vertices!.length - 1) / 2)];
+    const cwMid = vertexAt(clockwise.vertices!, Math.floor((clockwise.vertices!.length / 3 - 1) / 2));
     expect(cwMid.x).toBeCloseTo(0, 5);
     expect(cwMid.y).toBeCloseTo(-1, 5);
   });
@@ -112,8 +120,8 @@ describe('parseGcode', () => {
   it('uses right-handed G18/G19 plane coordinates for direction', () => {
     const g18 = parseGcode('G21 G90 G18 G03 X-1 I-1 K0', { initialPosition: { x: 1, y: 0, z: 0 } }).segments[0];
     const g19 = parseGcode('G21 G90 G19 G03 Y-1 J-1 K0', { initialPosition: { x: 0, y: 1, z: 0 } }).segments[0];
-    const mid18 = g18.vertices![Math.floor((g18.vertices!.length - 1) / 2)];
-    const mid19 = g19.vertices![Math.floor((g19.vertices!.length - 1) / 2)];
+    const mid18 = vertexAt(g18.vertices!, Math.floor((g18.vertices!.length / 3 - 1) / 2));
+    const mid19 = vertexAt(g19.vertices!, Math.floor((g19.vertices!.length / 3 - 1) / 2));
     expect(mid18.z).toBeCloseTo(-1, 5);
     expect(mid19.z).toBeCloseTo(1, 5);
   });
@@ -122,9 +130,9 @@ describe('parseGcode', () => {
     const full = parseGcode('G21 G90 G17 G03 I-1 J0', { initialPosition: { x: 1, y: 0, z: 0 } });
     expect(full.status).toBe('SUPPORTED');
     expect(full.segments).toHaveLength(1);
-    expect(full.segments[0].vertices).toHaveLength(73);
-    expect(full.segments[0].vertices![36].x).toBeCloseTo(-1, 5);
-    expect(full.segments[0].vertices![36].y).toBeCloseTo(0, 5);
+    expect(full.segments[0].vertices).toHaveLength(73 * 3);
+    expect(vertexAt(full.segments[0].vertices!, 36).x).toBeCloseTo(-1, 5);
+    expect(vertexAt(full.segments[0].vertices!, 36).y).toBeCloseTo(0, 5);
     const radius = parseGcode('G21 G90 G17 G03 R1', { initialPosition: { x: 1, y: 0, z: 0 } });
     expect(radius.status).toBe('INVALID');
     expect(radius.warnings[0].code).toBe('INVALID_ARC_GEOMETRY');
@@ -135,8 +143,8 @@ describe('parseGcode', () => {
     const major = parseGcode('G21 G90 G17 G03 X0 Y1 R-1', { initialPosition: { x: 1, y: 0, z: 0 } });
     expect(minor.segments).toHaveLength(2);
     expect(minor.segments[1].motion).toBe('G03');
-    const minorMid = minor.segments[0].vertices![Math.floor((minor.segments[0].vertices!.length - 1) / 2)];
-    const majorMid = major.segments[0].vertices![Math.floor((major.segments[0].vertices!.length - 1) / 2)];
+    const minorMid = vertexAt(minor.segments[0].vertices!, Math.floor((minor.segments[0].vertices!.length / 3 - 1) / 2));
+    const majorMid = vertexAt(major.segments[0].vertices!, Math.floor((major.segments[0].vertices!.length / 3 - 1) / 2));
     expect(minorMid.x).toBeCloseTo(Math.SQRT1_2, 5);
     expect(majorMid.x).toBeCloseTo(1 + Math.SQRT1_2, 5);
     expect(majorMid.y).toBeCloseTo(1 + Math.SQRT1_2, 5);
@@ -145,8 +153,8 @@ describe('parseGcode', () => {
   it('keeps large-radius chord sagitta within 0.01 mm and stops when the vertex cap would be exceeded', () => {
     const large = parseGcode('G21 G90 G17 G03 X0 Y1000 I-1000 J0', { initialPosition: { x: 1000, y: 0, z: 0 } }).segments[0];
     let maxSagitta = 0;
-    for (let i = 1; i < large.vertices!.length; i += 1) {
-      const a = large.vertices![i - 1], b = large.vertices![i];
+    for (let i = 1; i < large.vertices!.length / 3; i += 1) {
+      const a = vertexAt(large.vertices!, i - 1), b = vertexAt(large.vertices!, i);
       const midX = (a.x! + b.x!) / 2, midY = (a.y! + b.y!) / 2;
       maxSagitta = Math.max(maxSagitta, 1000 - Math.hypot(midX, midY));
     }
@@ -177,7 +185,7 @@ describe('parseGcode', () => {
     const result = parseGcode('N4 G21 G90 G17 G03 X0 Y1 I-1 J0', { initialPosition: { x: 1, y: 0, z: 0 } });
     expect(result.segments).toHaveLength(1);
     expect(result.segments[0]).toMatchObject({ sourceLine: 1, nBlock: '4', rawCode: 'N4 G21 G90 G17 G03 X0 Y1 I-1 J0', unit: 'mm', distanceMode: 'absolute', plane: 'XY' });
-    expect(result.segments[0].vertices!.length).toBeGreaterThan(2);
+    expect(result.segments[0].vertices!.length).toBeGreaterThan(6);
   });
 
   it('rejects malformed comments, duplicate axes, and conflicting modal words', () => {

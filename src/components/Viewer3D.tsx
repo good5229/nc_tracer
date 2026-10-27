@@ -13,7 +13,7 @@ export type ViewerSegment = {
   start: ViewerPoint;
   end: ViewerPoint;
   /** Optional ordered tessellation points for a validated arc move, including start/end. */
-  vertices?: ViewerPoint[] | Float32Array;
+  vertices?: ViewerPoint[] | Float32Array | Float64Array;
 };
 export type ViewerPlane = 'XY' | 'XZ' | 'YZ';
 
@@ -202,7 +202,7 @@ export default function Viewer3D({
     for (const segment of segments) {
       if (!finitePoint(segment.start) || !finitePoint(segment.end)) continue;
       let path: ViewerPoint[];
-      if (segment.vertices instanceof Float32Array) {
+      if ((segment.vertices instanceof Float32Array || segment.vertices instanceof Float64Array)) {
         if (segment.vertices.length < 6 || segment.vertices.length % 3 !== 0) continue;
         path = [];
         for (let i = 0; i < segment.vertices.length; i += 3) {
