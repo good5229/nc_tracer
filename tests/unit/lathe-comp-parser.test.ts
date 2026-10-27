@@ -115,3 +115,22 @@ it('rejects G76 while cutter compensation is active',()=>{
  const result=parseGcode(source,table);expect(result.status).toBe('PARTIAL');expect(result.warnings.at(-1)?.code).toBe('INVALID_THREAD_COMP');
  expect(result.segments.some(s=>s.rawCode.includes('G76'))).toBe(false);
 });
+it.each(['M2','M30'])('flushes compensated motion at standalone %s without a fabricated exit',end=>{
+ const source=readFileSync(new URL('../fixtures/lathe_comp_left.ngc',import.meta.url),'utf8');
+ const expected=parseGcode(source,settings),ended=parseGcode(source.replace(/G40\s+G0 X11\s+M2/,end),settings);
+ expect(ended.status).toBe('SUPPORTED');expect(ended.warnings).toEqual([]);
+ expect(ended.segments.map(s=>[s.motion,s.start,s.end])).toEqual(expected.segments.slice(0,-1).map(s=>[s.motion,s.start,s.end]));
+});
+it('flushes the multipass compensated G70 at M2',()=>{
+ const source=readFileSync(new URL('../fixtures/g70_comp_multi.ngc',import.meta.url),'utf8');
+ const table={...settings,linuxcncLatheToolReference:{tools:{'1':{diameter:.4,orientation:2,offsetX:0,offsetZ:0}}}};
+ const reference=parseGcode(source,table),ended=parseGcode(source.replace(/G40\s+G0 X12\s+M2/,'M2'),table);
+ expect(ended.status).toBe('SUPPORTED');expect(ended.warnings).toEqual([]);
+ expect(ended.segments.map(s=>[s.motion,s.start,s.end])).toEqual(reference.segments.slice(0,-1).map(s=>[s.motion,s.start,s.end]));
+});
+it('retains a real gouging failure even when the program ends with M2',()=>{
+ const source=readFileSync(new URL('../../demo/lathe_g70_71_demo.ngc',import.meta.url),'utf8');
+ const tools=Object.fromEntries([2,10].map(n=>[String(n),{diameter:.4,orientation:2,offsetX:0,offsetZ:0}]));
+ const result=parseGcode(source,{...settings,linuxcncLatheToolReference:{tools},linuxcncPawnContourReference:true,initialPosition:{x:20,y:0,z:5}});
+ expect(result.status).toBe('PARTIAL');expect(result.warnings.at(-1)?.code).toBe('CONCAVE_GOUGING');
+});

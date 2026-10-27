@@ -365,6 +365,13 @@ function parseCore(text: string, options: ParserOptions, originalSource = text):
     if (byLetter.has('S')) state.spindle = byLetter.get('S')![0];
     if (byLetter.has('T')) state.tool = byLetter.get('T')![0];
     if(latheTools){
+      // LinuxCNC flushes queued cutter-compensated motion and cancels
+      // compensation at M2/M30, without inventing a subsequent exit move.
+      const endOnly=mWords.some(m=>m===2||m===30)&&tokens.every(token=>token.letter==='N'||token.letter==='M');
+      if(latheComp && endOnly){
+        if(!flushLatheComp(latheComp,sourceLine)){Object.assign(state,blockStartState);stopped=true;break;}
+        latheComp=null;cutterCompActive=false;pendingCompExit=null;spindleRunning=false;programEndIndex=index;stopped=true;continue;
+      }
       if(latheComp && (mWords.length || gWords.some(g=>[17,19,20,21,43,49].includes(g)))){warn(sourceLine,'UNSUPPORTED_COMP_STATE_CHANGE','공구 보정 중 기계 또는 평면 변경은 지원하지 않습니다.');Object.assign(state,blockStartState);status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;}
       if(mWords.includes(6)){
         if(state.tool===null || !Number.isInteger(state.tool) || state.tool<0 || (state.tool!==0 && !latheTools.tools[String(state.tool)])){warn(sourceLine,'UNKNOWN_LATHE_TOOL','공구표에서 선택한 공구를 찾을 수 없습니다.');Object.assign(state,blockStartState);status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;}

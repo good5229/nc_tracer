@@ -1,4 +1,5 @@
 import {expect,test} from '@playwright/test';
+import {readFileSync} from 'node:fs';
 test('example lathe tool table displays compensated paths and detects the real demo entry issue',async({page})=>{
  await page.goto('/');await page.getByLabel('컨트롤러 프로파일').selectOption('linuxcnc');
  await page.getByRole('button',{name:'선반 보정 예제 열기'}).click();
@@ -10,4 +11,11 @@ test('example lathe tool table displays compensated paths and detects the real d
  await page.getByRole('button',{name:'예제 공구표로 다시 해석'}).click();
  await expect(page.locator('.status')).toHaveText('PARTIAL');
  await expect(page.getByRole('region',{name:'해석 진단'})).toContainText('진입 이동');
+});
+
+test('shows a compensated multipass cycle ending with M2',async({page})=>{
+ await page.goto('/');await page.getByLabel('컨트롤러 프로파일').selectOption('linuxcnc');await page.getByLabel('선반 예제 공구표 사용').check();
+ await page.locator('.topbar input[type=file]').setInputFiles({name:'g70-m2.ngc',mimeType:'text/plain',buffer:readFileSync('tests/fixtures/g70_comp_multi_end_m2.ngc')});
+ await expect(page.locator('.status')).toHaveText('SUPPORTED');await expect(page.getByRole('region',{name:'해석 진단'})).toHaveCount(0);
+ await expect(page.locator('.counter')).not.toContainText('/ 0');
 });
