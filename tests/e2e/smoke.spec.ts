@@ -63,3 +63,17 @@ test('filters motion and tools and reports program path distances', async ({page
  await stats.getByLabel('G01').uncheck();
  await expect(stats).toContainText('0개 이동 블록');
 });
+
+test('reloading the same program clears the comparison', async ({page}) => {
+ await page.goto('/nc_tracer/');
+ const active=page.locator('.topbar input[type=file]');
+ const data={name:'same.nc',mimeType:'text/plain',buffer:Buffer.from('G21 G90 G00 X0 Y0 Z0\nG01 X1\nM30')};
+ await active.setInputFiles(data);
+ await expect(page.locator('.metrics')).toContainText('X 1');
+ await page.getByText('파일 비교', {exact:false}).first().click();
+ await page.locator('.comparison input[type=file]').setInputFiles({name:'other.nc',mimeType:'text/plain',buffer:Buffer.from('G21 G90 G00 X0 Y0 Z0\nG01 X2\nM30')});
+ await expect(page.locator('.comparison')).toContainText('other.nc');
+ await active.setInputFiles(data);
+ await expect(page.locator('.metrics')).toContainText('X 1');
+ await expect(page.locator('.comparison')).not.toContainText('other.nc');
+});

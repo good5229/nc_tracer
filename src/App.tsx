@@ -9,7 +9,7 @@ const EXAMPLE = `(합성 예제: 사각 경로)\nG21 G90\nG00 X0 Y0 Z5\nG01 Z0 F
 const EMPTY_SEGMENTS: MotionSegment[] = [];
 const fmt = (n: number | null | undefined) => n == null ? '—' : Number(n.toFixed(3)).toString();
 export default function App() {
- const [source,setSource] = useState(''); const [filename,setFilename] = useState(''); const [appliedOptions,setAppliedOptions] = useState<ParserOptions>({});
+ const [sourceGeneration,setSourceGeneration] = useState(0); const [source,setSource] = useState(''); const [filename,setFilename] = useState(''); const [appliedOptions,setAppliedOptions] = useState<ParserOptions>({});
  const [filters,setFilters] = useState<PathFilters>({motions:new Set(PATH_MOTIONS),tools:null});
  const [result,setResult] = useState<ParseResult | null>(null); const [current,setCurrent] = useState(-1); const [selectedLine,setSelectedLine] = useState<number | null>(null); const [lineInput,setLineInput] = useState(''); const [fileSize,setFileSize] = useState(0);
  const [busy,setBusy] = useState(false); const [error,setError] = useState(''); const [playing,setPlaying] = useState(false);
@@ -17,7 +17,7 @@ export default function App() {
  const [initial,setInitial] = useState(false); const [origin,setOrigin] = useState({x:'0',y:'0',z:'0'}); const [unit,setUnit] = useState<'unknown'|'mm'|'inch'>('unknown'); const [distance,setDistance] = useState<'unknown'|'absolute'|'incremental'>('unknown'); const [motion,setMotion] = useState<'unknown'|'G00'|'G01'>('unknown'); const [drop,setDrop] = useState(false);
  const codeList = useRef<HTMLDivElement>(null); const generation = useRef(0); const worker = useRef<Worker | null>(null); const input = useRef<HTMLInputElement>(null);
  const run = (text:string,name:string,size?:number) => {
-  const runId=++generation.current; worker.current?.terminate(); setPlaying(false); setCurrent(-1); setSelectedLine(null); setLineInput(''); setFilters({motions:new Set(PATH_MOTIONS),tools:null}); setResult(null); setError(''); setSearch(''); setPaste(''); setSource(text); setFilename(name); setFileSize(size ?? new Blob([text]).size); setBusy(true);
+  const runId=++generation.current; setSourceGeneration(i=>i+1); worker.current?.terminate(); setPlaying(false); setCurrent(-1); setSelectedLine(null); setLineInput(''); setFilters({motions:new Set(PATH_MOTIONS),tools:null}); setResult(null); setError(''); setSearch(''); setPaste(''); setSource(text); setFilename(name); setFileSize(size ?? new Blob([text]).size); setBusy(true);
   const xyz = {x:Number(origin.x),y:Number(origin.y),z:Number(origin.z)};
   if (initial && (Object.values(origin).some(v=>!v.trim()) || Object.values(xyz).some(v=>!Number.isFinite(v)))) {setError('시작 좌표는 유한한 숫자로 입력해 주세요.');setBusy(false);return;}
   const w = new Worker(new URL('./workers/gcode.worker.ts', import.meta.url), {type:'module'}); worker.current=w;
@@ -29,7 +29,7 @@ export default function App() {
  };
  useEffect(()=>()=>{generation.current++;worker.current?.terminate();},[]);
  useEffect(()=>{if(!playing || !result) return; const timer=window.setInterval(()=>setCurrent(i=>{if(i>=result.segments.length-1){setPlaying(false);return i;}return i+1;}),1000/speed);return ()=>clearInterval(timer);},[playing,result,speed]);
- const loadFile=async(file?:File)=>{if(!file)return; const token=++generation.current; worker.current?.terminate(); setResult(null);setSource('');setFilename('');setFileSize(0);setSelectedLine(null);setCurrent(-1);setBusy(false);setPlaying(false);setError('');setPaste('');try{const bytes=await file.arrayBuffer(); const text=new TextDecoder('utf-8',{fatal:true}).decode(bytes); if(token===generation.current) run(text,file.name,file.size);}catch{if(token===generation.current) setError('UTF-8로 읽을 수 없습니다. 파일을 UTF-8로 변환한 뒤 다시 선택해 주세요.');}};
+ const loadFile=async(file?:File)=>{if(!file)return; const token=++generation.current; setSourceGeneration(i=>i+1); worker.current?.terminate(); setResult(null);setSource('');setFilename('');setFileSize(0);setSelectedLine(null);setCurrent(-1);setBusy(false);setPlaying(false);setError('');setPaste('');try{const bytes=await file.arrayBuffer(); const text=new TextDecoder('utf-8',{fatal:true}).decode(bytes); if(token===generation.current) run(text,file.name,file.size);}catch{if(token===generation.current) setError('UTF-8로 읽을 수 없습니다. 파일을 UTF-8로 변환한 뒤 다시 선택해 주세요.');}};
  const lines=useMemo(()=>source.split(/\r?\n/),[source]);
  const segments=result?.segments ?? EMPTY_SEGMENTS;
  const visibleSegments=useMemo(()=>filterPathSegments(segments,filters),[segments,filters]);
@@ -53,7 +53,7 @@ export default function App() {
     <div className="metrics"><div><span>현재 위치 / mm</span><strong>X {fmt(active?.end.x)} <em>Y</em> {fmt(active?.end.y)} <em>Z</em> {fmt(active?.end.z)}</strong></div><div><span>선택된 블록 / 시작점 mm</span><strong>{active ? `${active.motion} · 행 ${active.sourceLine}${active.nBlock ? ` · N${active.nBlock}` : ''} / ${fmt(active.start.x)}, ${fmt(active.start.y)}, ${fmt(active.start.z)}` : '—'}</strong></div><div><span>해석 구간 / 경고 · 선택 블록 단위 / 좌표 모드</span><strong>{result?.segments.length ?? 0} <em>/</em> {result?.warnings.length ?? 0} · {active?.unit ?? '?'} / {active?.distanceMode ?? '?'}</strong></div></div>
    </section></div>
    {result && <PathStats segments={segments} filters={filters} onFiltersChange={setFilters}/>}
-   <FileComparison source={source} result={result} options={appliedOptions} />
+   <FileComparison key={sourceGeneration} source={source} result={result} options={appliedOptions} />
    {(error || result?.warnings.length) ? <section className="diagnostics" aria-label="해석 진단"><h2>해석 진단 <span>{result?.warnings.length ?? 0}</span></h2>{error && <p>{error}</p>}{result?.warnings.slice(0,100).map(w=><button key={w.id} onClick={()=>selectLine(w.sourceLine)}><b>행 {w.sourceLine}</b> {w.message}</button>)}</section> : null}
    <footer><span>NC TOOLPATH VIEWER · LOCAL FIRST</span><span>원본과 좌표는 이 탭의 메모리에서 처리됩니다.</span></footer>
   </main>{drop && <div className="drop-overlay">여기에 NC 파일을 놓으세요</div>}</div>;
