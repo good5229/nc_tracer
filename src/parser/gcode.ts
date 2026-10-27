@@ -49,7 +49,7 @@ export type ParserOptions = {
   controllerProfile?: 'generic' | 'linuxcnc';
   /** Explicit synthetic reference setup: zero-offset G54, zero-diameter/length tools, stationary M6, G8. */
   linuxcncPointToolReference?: boolean;
-  /** Explicit machine-mm tool table; tool length offsets must be zero in this profile. */
+  /** Explicit machine-mm tool table; stationary tool change and physical tool offsets are assumed. */
   linuxcncLatheToolReference?: { tools: Record<string,{diameter:number;orientation:number;offsetX:number;offsetZ:number}> };
   /** Explicit LinuxCNC 2.9.4 generated-contour replay, limited to the unmodified pawn demo. */
   linuxcncPawnContourReference?: boolean;
@@ -203,12 +203,18 @@ function parseCore(text: string, options: ParserOptions, originalSource = text):
   const latheTools=options.controllerProfile==='linuxcnc'?options.linuxcncLatheToolReference:undefined;
   const pointReference = options.controllerProfile === 'linuxcnc' && (options.linuxcncPointToolReference === true || latheTools!==undefined);
   let loadedTool:number|null=null;
+  const toolLengthOffset={x:0,z:0};
   const motionTool=()=>latheTools?loadedTool:state.tool;
   let latheComp:{start:LatheNosePoint;side:'left'|'right';diameter:number;orientation:number;moves:LatheInputMove[];metadata:Map<number,{rawCode:string;feed:number|null;spindle:number|null;tool:number|null;distanceMode:ModalState['distanceMode']}>}|null=null;
   let pendingCompExit:LatheNosePoint|null=null;
   let latheRadiusMode = pointReference;
   const localOffset = {x:0,y:0,z:0};
-  const toReference = (p:Vector3):Vector3 => ({x:p.x === null ? null : p.x+localOffset.x, y:p.y === null ? null : p.y+localOffset.y, z:p.z === null ? null : p.z+localOffset.z});
+  // The controlled point moves by the active length offset; the physical
+  // tool tip is displaced by the loaded tool's measured table offset.
+  const toReference = (p:Vector3):Vector3 => {
+    const physical=loadedTool===null?undefined:latheTools?.tools[String(loadedTool)];
+    return {x:p.x === null ? null : p.x+localOffset.x+toolLengthOffset.x-(physical?.offsetX??0), y:p.y === null ? null : p.y+localOffset.y, z:p.z === null ? null : p.z+localOffset.z+toolLengthOffset.z-(physical?.offsetZ??0)};
+  };
   let programEndIndex: number | null = null;
   const warn = (sourceLine: number, code: string, message: string) => {
     const id = `warning-${sourceLine}-${warnings.length}`;
@@ -297,6 +303,7 @@ function parseCore(text: string, options: ParserOptions, originalSource = text):
     if (pathControl || dwell) knownLetters.add('P');
     if (pathControl) knownLetters.add('Q');
     if (thread) for (const letter of ['P','Q','H','E','L','D']) knownLetters.add(letter);
+    if (latheTools && gWords.includes(43)) knownLetters.add('H');
     if (rough) for (const letter of ['Q','D']) knownLetters.add(letter);
     if (finish) for (const letter of ['Q','D','E','P']) knownLetters.add(letter);
     if (enableLatheComp) for(const letter of ['D','L']) knownLetters.add(letter);
@@ -376,10 +383,20 @@ function parseCore(text: string, options: ParserOptions, originalSource = text):
       if(mWords.includes(6)){
         if(state.tool===null || !Number.isInteger(state.tool) || state.tool<0 || (state.tool!==0 && !latheTools.tools[String(state.tool)])){warn(sourceLine,'UNKNOWN_LATHE_TOOL','공구표에서 선택한 공구를 찾을 수 없습니다.');Object.assign(state,blockStartState);status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;}
         loadedTool=state.tool===0?null:state.tool;
+        const physical=loadedTool===null?undefined:latheTools.tools[String(loadedTool)];
+        if(physical&&(!Number.isFinite(physical.offsetX)||!Number.isFinite(physical.offsetZ))){warn(sourceLine,'UNSUPPORTED_TOOL_LENGTH','공구표의 X/Z 오프셋이 유효하지 않습니다.');Object.assign(state,blockStartState);status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;}
       }
-      if(gWords.includes(43)){
-        const tool=loadedTool===null?undefined:latheTools.tools[String(loadedTool)];
-        if(!tool || tool.offsetX!==0 || tool.offsetZ!==0){warn(sourceLine,'UNSUPPORTED_TOOL_LENGTH','공구 길이 보정은 공구표의 X/Z 오프셋이 명시적으로 0인 경우만 지원합니다.');Object.assign(state,blockStartState);status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;}
+      if(gWords.includes(43)||gWords.includes(49)){
+        if(enableLatheComp){warn(sourceLine,'UNSUPPORTED_TOOL_LENGTH','같은 블록의 공구 반경 보정과 길이 보정은 지원하지 않습니다.');Object.assign(state,blockStartState);status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;}
+        const h=byLetter.get('H')?.[0],offsetTool=h===undefined?loadedTool:h;
+        const tool=offsetTool===null?undefined:latheTools.tools[String(offsetTool)];
+        if(gWords.includes(43)&&(!tool||!Number.isInteger(offsetTool)||offsetTool!<1||!Number.isFinite(tool.offsetX)||!Number.isFinite(tool.offsetZ)||(byLetter.get('H')?.length??0)>1||thread)){
+          warn(sourceLine,'UNSUPPORTED_TOOL_LENGTH','G43에 필요한 공구표와 H 번호를 확인해 주세요.');Object.assign(state,blockStartState);status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;
+        }
+        const next=gWords.includes(49)?{x:0,z:0}:{x:tool!.offsetX,z:tool!.offsetZ};
+        if(mWords.includes(6)&&(next.x!==0||next.z!==0)){warn(sourceLine,'UNSUPPORTED_TOOL_LENGTH','비영 G43과 M6이 같은 블록인 경우는 아직 검증되지 않았습니다.');Object.assign(state,blockStartState);status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;}
+        for(const axis of ['x','z'] as const)if(state.position[axis]!==null)state.position[axis]!+=toolLengthOffset[axis]-next[axis];
+        toolLengthOffset.x=next.x;toolLengthOffset.z=next.z;
       }
       if(gWords.includes(40)){
         if(latheComp&&!flushLatheComp(latheComp,sourceLine)){Object.assign(state,blockStartState);stopped=true;break;}
@@ -516,7 +533,7 @@ function parseCore(text: string, options: ParserOptions, originalSource = text):
         warn(sourceLine, 'FLOAT32_PRECISION_LOSS', 'G76 coordinates exceed the supported display precision'); Object.assign(state, blockStartState); status = 'INVALID'; stopped = true; break;
       }
       for (const [index, move] of result.moves.entries()) {
-        if (move.start.x !== move.end.x || move.start.y !== move.end.y || move.start.z !== move.end.z) segments.push({id:`line-${sourceLine}-segment-${index}`, sourceLine, ...(byLetter.has('N') ? {nBlock:String(byLetter.get('N')![0])} : {}), rawCode, motion:move.motion, start:toReference(move.start), end:toReference(move.end), unit:state.unit, distanceMode:state.distanceMode, plane:state.plane, status:'SUPPORTED', warningIds:[], thread:{kind:move.kind,synchronized:move.spindleSynchronized,pitch:value('P')!*scale,phaseOriginZ:move.phaseOriginZ+localOffset.z,phaseTurnsStart:move.phaseTurnsStart,phaseTurnsEnd:move.phaseTurnsEnd,axialDirection:result.finalPosition.z>start.z*scale?1:-1,spindleDirection,external:value('I')!<0,indexOffsetDegrees:result.spindleIndexOffsetDegrees}, ...(state.feed !== null ? {feed:state.feed} : {}), ...(state.spindle !== null ? {spindle:state.spindle} : {}), ...(motionTool() !== null ? {tool:motionTool()!} : {})});
+        if (move.start.x !== move.end.x || move.start.y !== move.end.y || move.start.z !== move.end.z) segments.push({id:`line-${sourceLine}-segment-${index}`, sourceLine, ...(byLetter.has('N') ? {nBlock:String(byLetter.get('N')![0])} : {}), rawCode, motion:move.motion, start:toReference(move.start), end:toReference(move.end), unit:state.unit, distanceMode:state.distanceMode, plane:state.plane, status:'SUPPORTED', warningIds:[], thread:{kind:move.kind,synchronized:move.spindleSynchronized,pitch:value('P')!*scale,phaseOriginZ:toReference({x:0,y:0,z:move.phaseOriginZ}).z!,phaseTurnsStart:move.phaseTurnsStart,phaseTurnsEnd:move.phaseTurnsEnd,axialDirection:result.finalPosition.z>start.z*scale?1:-1,spindleDirection,external:value('I')!<0,indexOffsetDegrees:result.spindleIndexOffsetDegrees}, ...(state.feed !== null ? {feed:state.feed} : {}), ...(state.spindle !== null ? {spindle:state.spindle} : {}), ...(motionTool() !== null ? {tool:motionTool()!} : {})});
       }
       state.position = result.finalPosition;
       state.motionMode = null;

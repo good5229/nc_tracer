@@ -65,9 +65,31 @@ it('uses the explicitly loaded tool table for G41 and rejects unknown offsets',(
  const result=parseGcode(source,table);expect(result.status).toBe('SUPPORTED');
  const expected=reference.lathe_comp_left.moves;expect(result.segments).toHaveLength(expected.length);
  result.segments.forEach((s,i)=>{expect(s.motion).toBe(expected[i].motion);expect(s.end.x).toBeCloseTo(expected[i].end[0],4);expect(s.end.z).toBeCloseTo(expected[i].end[1],4);});
- const invalid=parseGcode(source,{...table,linuxcncLatheToolReference:{tools:{'11':{diameter:.4,orientation:2,offsetX:1,offsetZ:0}}}});
+ const invalid=parseGcode(source,{...table,linuxcncLatheToolReference:{tools:{'11':{diameter:.4,orientation:2,offsetX:NaN,offsetZ:0}}}});
  expect(invalid.status).toBe('PARTIAL');expect(invalid.warnings.at(-1)?.code).toBe('UNSUPPORTED_TOOL_LENGTH');
  expect(parseGcode(source,settings).warnings.at(-1)?.code).toBe('UNKNOWN_LATHE_TOOL');
+});
+it('keeps physical tool position continuous through G43 and G49',()=>{
+ // Canonical positions independently checked against LinuxCNC 2.9.4:
+ // https://github.com/good5229/nc_tracer/actions/runs/40533488881
+ const code='G18 G8 G21 G90\nT1 M6\nG0 X10 Z10\nG43\nG1 X5 F100\nG91 G1 Z-2\nG90\nG49\nG1 Z0\nM2';
+ const table={...settings,linuxcncLatheToolReference:{tools:{'1':{diameter:.4,orientation:2,offsetX:2,offsetZ:3}}}};
+ const result=parseGcode(code,table);expect(result.status).toBe('SUPPORTED');expect(result.warnings).toEqual([]);
+ expect(result.segments.map(s=>[s.start.x,s.start.z,s.end.x,s.end.z])).toEqual([[-2,-3,8,7],[8,7,5,7],[5,7,5,5],[5,5,5,-3]]);
+ expect(result.finalState.position).toMatchObject({x:7,z:0});
+});
+it('keeps physical positions consistent through G43 and G92 changes',()=>{
+ const code='G18 G8 G21 G90\nT1 M6\nG0 X10 Z10\nG43\nG92 X0 Z0\nG1 X-3 Z-2 F100\nG92.1\nG1 X4\nM2';
+ const table={...settings,linuxcncLatheToolReference:{tools:{'1':{diameter:.4,orientation:2,offsetX:2,offsetZ:3}}}};
+ const result=parseGcode(code,table);expect(result.status).toBe('SUPPORTED');
+ expect(result.segments.map(s=>[s.start.x,s.start.z,s.end.x,s.end.z])).toEqual([[-2,-3,8,7],[8,7,5,5],[5,5,4,5]]);
+});
+it('uses a distinct H offset without treating it as the physical tool size',()=>{
+ const code='G18 G8 G21 G90\nT1 M6\nG0 X10 Z10\nG43 H2\nG1 X5 F100\nG49\nG1 Z0\nM2';
+ const table={...settings,linuxcncLatheToolReference:{tools:{'1':{diameter:.4,orientation:2,offsetX:2,offsetZ:3},'2':{diameter:.4,orientation:2,offsetX:4,offsetZ:6}}}};
+ const result=parseGcode(code,table);expect(result.status).toBe('SUPPORTED');
+ expect(result.segments.map(s=>[s.start.x,s.start.z,s.end.x,s.end.z])).toEqual([[-2,-3,8,7],[8,7,7,7],[7,7,7,-3]]);
+ expect(parseGcode(code.replace('H2','H99'),table).warnings.at(-1)?.code).toBe('UNSUPPORTED_TOOL_LENGTH');
 });
 it('requires a loaded tool for cycles and rejects an unclosed compensation section',()=>{
  const cycle=readFileSync(new URL('../fixtures/g70_single.ngc',import.meta.url),'utf8');

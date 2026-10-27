@@ -328,3 +328,12 @@ it('agrees with angular samples for 3D holder boxes on a stationary tool',()=>{
   expect(Boolean(shape.holderContacts?.length),`box ${i}`).toBe(expected);
  }
 });
+
+it('removes identical stock for physically identical paths with nonzero tool offsets',()=>{
+ const start={x:20,y:0,z:10},tool={diameter:.4,orientation:2,offsetX:2,offsetZ:3},offsetOptions={...options,initialPosition:start,linuxcncLatheToolReference:{tools:{'1':tool}}};
+ const offsetCode='G21 G90 G18 G8\nT1 M6\nG0 X14 Z7\nG43\nG0 Z-3\nG1 X8 F100\nM2';
+ const referenceOptions={...options,initialPosition:{x:18,y:0,z:7}},referenceCode='G21 G90 G18 G8\nT1 M6\nG0 X12 Z4\nG43\nG0 Z-3\nG1 X8 F100\nM2';
+ const offset=parseGcode(offsetCode,offsetOptions),reference=parseGcode(referenceCode,referenceOptions);expect(offset.status).toBe('SUPPORTED');expect(reference.status).toBe('SUPPORTED');
+ expect(offset.segments.map(s=>[s.start,s.end])).toEqual(reference.segments.map(s=>[s.start,s.end]));
+ const actual=simulateLatheStock(offset,offsetOptions),expected=simulateLatheStock(reference,referenceOptions);if(!actual.ok||!expected.ok)throw new Error('stock example failed');expect(actual.remaining).toEqual(expected.remaining);
+});

@@ -125,7 +125,7 @@ export function simulateLatheStock(result:ParseResult,options:ParserOptions,mode
  for(const segment of result.segments){
   if(!finite(segment.start)||!finite(segment.end)||segment.start.y!==0||segment.end.y!==0||segment.plane!=='XZ')return {ok:false,message:'X/Z 평면의 완전히 알려진 경로만 계산합니다.',sourceLine:segment.sourceLine};
   const tool=segment.tool===undefined?undefined:table[String(segment.tool)];
-  if(!tool||!Number.isFinite(tool.diameter)||tool.diameter<=0||!Number.isInteger(tool.orientation)||tool.orientation<0||tool.orientation>9||tool.offsetX!==0||tool.offsetZ!==0)return {ok:false,message:'각 이동에 길이 0인 예제 공구표 항목이 필요합니다.',sourceLine:segment.sourceLine};
+  if(!tool||!Number.isFinite(tool.diameter)||tool.diameter<=0||!Number.isInteger(tool.orientation)||tool.orientation<0||tool.orientation>9||!Number.isFinite(tool.offsetX)||!Number.isFinite(tool.offsetZ))return {ok:false,message:'각 이동에 유효한 예제 공구표 항목이 필요합니다.',sourceLine:segment.sourceLine};
   const blade=partingTools[String(segment.tool)],threadTool=threadingTools[String(segment.tool)],currentInsert=insertOverrides[String(segment.tool)]??insertShape,currentHolder=holderOverrides[String(segment.tool)]??holder;
   if(currentHolder&&!validHolder(currentHolder))return {ok:false,message:'공구별 홀더 단면 범위를 확인해 주세요.',sourceLine:segment.sourceLine};
   if(model==='example-insert'&&!blade&&!threadTool&&!validInsert(currentInsert))return {ok:false,message:'공구별 인서트 단면 X 길이와 Z 범위를 확인해 주세요.',sourceLine:segment.sourceLine};

@@ -36,3 +36,19 @@ jobs:
             echo "--- $offset (X$x Z$z) ---"
             timeout 30s rs274 -i /tmp/reference.ini -g -t /tmp/reference-tool.tbl /tmp/tool-offset-reference.ngc
           done
+          cat > /tmp/reference-tool.tbl <<'TOOLS'
+          T1 P1 X2 Z3 D0.4 Q2
+          T2 P2 X4 Z6 D0.4 Q2
+          TOOLS
+          cat > /tmp/tool-offset-h.ngc <<'NC'
+          G18 G8 G21 G90
+          T1 M6
+          G0 X10 Z10
+          G43 H2
+          G1 X5 F100
+          G49
+          G1 Z0
+          M2
+          NC
+          echo '--- loaded T1 with G43 H2 ---'
+          timeout 30s rs274 -i /tmp/reference.ini -g -t /tmp/reference-tool.tbl /tmp/tool-offset-h.ngc
