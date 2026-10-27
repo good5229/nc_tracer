@@ -1,0 +1,10 @@
+(LinuxCNC tool nose compensation reference lathe_comp_left)
+G18 G8 G21 G90
+G0 X10 Z1
+G41.1 D0.4 L2
+G1 X8 Z1 F100
+G1 X8 Z-5
+G1 X10 Z-5
+G40
+G0 X11
+M2
