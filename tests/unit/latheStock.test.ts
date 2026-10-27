@@ -108,3 +108,13 @@ it('shows the original pawn demo up to the verified G70 gouging error',()=>{
  const shape=simulateLatheStock(parsed,setup,'example-insert',LATHE_STOCK_PRESETS['pawn-demo'],true);
  if(!shape.ok)throw new Error(`${shape.message} (row ${shape.sourceLine})`);expect(shape.partial).toBe(true);expect(shape.removed).toBeGreaterThan(0);expect(shape.stopLine).toBe(30);expect(shape.stopMessage).toContain('급속 이동');
 });
+it('calculates the complete original G76 point-table path with separately assumed physical tools',()=>{
+ const source=readFileSync(new URL('../../demo/lathe-g76.ngc',import.meta.url),'utf8');
+ const pointOptions={controllerProfile:'linuxcnc' as const,linuxcncPointToolReference:true,initialPosition:{x:0,y:0,z:0},initialDistanceMode:'absolute' as const};
+ const parsed=parseGcode(source,pointOptions);expect(parsed.status).toBe('SUPPORTED');expect(parsed.segments.some(s=>s.thread?.kind==='thread-cut')).toBe(true);
+ const tools=Object.fromEntries([1,4,9].map(n=>[String(n),{diameter:.4,orientation:2,offsetX:0,offsetZ:0}]));
+ const grid={radius:3.175,zMin:-16.6,zMax:0,step:.2,radialCells:16,axialCells:83,angularSegments:24};
+ const shape=simulateLatheStock(parsed,{...pointOptions,linuxcncLatheToolReference:{tools}},'round-nose',grid);
+ if(!shape.ok)throw new Error(shape.message);expect(shape.angularCells).toBe(24);expect(shape.removed).toBeGreaterThan(0);expect(shape.remaining.some(v=>v===1)).toBe(true);
+ let mixedRings=0;for(let i=0;i<shape.remaining.length;i+=24){const ring=shape.remaining.slice(i,i+24);if(ring.some(v=>v===0)&&ring.some(v=>v===1))mixedRings++;}expect(mixedRings).toBeGreaterThan(0);
+});

@@ -9,6 +9,8 @@ export const LATHE_STOCK_PRESETS:Record<'standard'|'thread-demo'|'pawn-demo',Lat
  'thread-demo':{radius:3.175,zMin:-16.5,zMax:0,step:.1,radialCells:32,axialCells:165,angularSegments:48},
  'pawn-demo':{radius:15,zMin:-40,zMax:3,step:.2,radialCells:75,axialCells:215,angularSegments:48},
 };
+/** Coarser independent physical-tool preview for the original zero-table-radius G76 reference. */
+export const THREAD_POINT_PREVIEW_GRID:LatheStockGrid={radius:3.175,zMin:-16.6,zMax:0,step:.2,radialCells:16,axialCells:83,angularSegments:24};
 export type LatheStockResult={ok:true;remaining:Uint8Array;removed:number;angularCells?:number;grid:LatheStockGrid;partial?:boolean;stopLine?:number;stopMessage?:string}|{ok:false;message:string;sourceLine?:number};
 export type LatheInsertModel='round-nose'|'example-insert';
 type Point={x:number;z:number};

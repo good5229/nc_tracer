@@ -69,3 +69,11 @@ test('shows the original pawn reference until its first example-stock collision'
  await expect(region.getByRole('status')).toContainText('중단 전 예상 형상 (완성 형상 아님)');await expect(region.getByRole('status')).toContainText('급속 이동');
  await expect(region.getByLabel('선반 예제 소재 3D 표시')).toBeVisible();
 });
+test('shows the complete original G76 path with an explicitly different physical tool assumption',async({page})=>{
+ await page.goto('/');await page.getByLabel('LinuxCNC 데모').selectOption('lathe-g76.ngc');
+ await expect(page.locator('.status')).toHaveText('SUPPORTED');const region=page.getByRole('region',{name:'선반 예제 소재 형상'});
+ await expect(region).toContainText('공구표와 물리 공구가 다르므로');
+ await region.getByRole('button',{name:'점 공구 경로의 가상 형상 계산'}).click();
+ await expect(region.getByRole('status')).toContainText('공구표 반경 0 경로의 가상 예상 형상 (안전 미검증)');
+ await expect(region.getByLabel('선반 예제 소재 3D 표시')).toBeVisible();
+});
