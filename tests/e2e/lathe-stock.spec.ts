@@ -39,3 +39,12 @@ test('stops example-stock calculation at a compensated G70 rapid collision',asyn
  await expect(region.getByRole('status')).toContainText('급속 이동 중');
  await expect(region.getByLabel('선반 예제 소재 3D 표시')).toHaveCount(0);
 });
+test('switches between the round nose and the example insert section',async({page})=>{
+ await page.goto('/');await page.getByLabel('컨트롤러 프로파일').selectOption('linuxcnc');await page.getByLabel('선반 예제 공구표 사용').check();
+ const source='G21 G90 G18 G8\nT1 M6\nG0 X12 Z0\nG0 Z-3\nG1 X8 F100\nG0 X12\nM2';
+ await page.locator('.topbar input[type=file]').setInputFiles({name:'insert.ngc',mimeType:'text/plain',buffer:Buffer.from(source)});await expect(page.locator('.status')).toHaveText('SUPPORTED');
+ const region=page.getByRole('region',{name:'선반 예제 소재 형상'});await region.getByRole('button',{name:'선반 소재 형상 계산'}).click();
+ await expect(region.getByRole('status')).toContainText('예상 형상');const round=await region.getByRole('status').textContent();
+ await region.getByLabel('예제 공구 형상').selectOption('example-insert');await expect(region.getByRole('status')).toContainText('예상 형상');
+ await expect(region.getByRole('status')).not.toHaveText(round!);await expect(region.getByLabel('선반 예제 소재 3D 표시')).toBeVisible();
+});

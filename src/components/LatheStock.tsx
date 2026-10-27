@@ -1,15 +1,15 @@
 import {useEffect,useRef,useState} from 'react';
 import * as THREE from 'three';
 import {OrbitControls} from 'three/examples/jsm/controls/OrbitControls.js';
-import {LATHE_STOCK,type LatheStockResult} from '../simulation/latheStock';
+import {LATHE_STOCK,type LatheStockResult,type LatheInsertModel} from '../simulation/latheStock';
 import type {ParseResult,ParserOptions} from '../parser/gcode';
 
 export default function LatheStock({result,options}:{result:ParseResult|null;options:ParserOptions}){
- const [shape,setShape]=useState<LatheStockResult|null>(null),[busy,setBusy]=useState(false),[request,setRequest]=useState(0);const host=useRef<HTMLDivElement>(null);
+ const [shape,setShape]=useState<LatheStockResult|null>(null),[busy,setBusy]=useState(false),[request,setRequest]=useState(0),[model,setModel]=useState<LatheInsertModel>('round-nose');const host=useRef<HTMLDivElement>(null);
  useEffect(()=>{
   if(!request||!result)return;setBusy(true);setShape(null);const worker=new Worker(new URL('../workers/latheStock.worker.ts',import.meta.url),{type:'module'});
-  worker.onmessage=(event:MessageEvent<LatheStockResult>)=>{setShape(event.data);setBusy(false);worker.terminate();};worker.onerror=()=>{setShape({ok:false,message:'선반 소재 계산을 시작할 수 없습니다.'});setBusy(false);worker.terminate();};worker.postMessage({result,options});return()=>worker.terminate();
- },[request,result,options]);
+  worker.onmessage=(event:MessageEvent<LatheStockResult>)=>{setShape(event.data);setBusy(false);worker.terminate();};worker.onerror=()=>{setShape({ok:false,message:'선반 소재 계산을 시작할 수 없습니다.'});setBusy(false);worker.terminate();};worker.postMessage({result,options,model});return()=>worker.terminate();
+ },[request,result,options,model]);
  useEffect(()=>{
   const element=host.current;if(!element||!shape?.ok)return;
   const {radialCells:nr,axialCells:nz,step,zMin,angularSegments:na}=LATHE_STOCK,positions:number[]=[];
@@ -34,5 +34,5 @@ export default function LatheStock({result,options}:{result:ParseResult|null;opt
   const render=()=>renderer.render(scene,camera);controls.addEventListener('change',render);const resize=()=>{const w=element.clientWidth,h=element.clientHeight;if(!w||!h)return;camera.aspect=w/h;camera.updateProjectionMatrix();renderer.setSize(w,h);render();};const observer=new ResizeObserver(resize);observer.observe(element);resize();
   return()=>{observer.disconnect();controls.dispose();geometry.dispose();material.dispose();renderer.dispose();renderer.domElement.remove();};
  },[shape]);
- return <section className="stock-example" aria-label="선반 예제 소재 형상"><div className="panel-head"><div><span className="section-tag">LATHE / EXAMPLE STOCK</span><h2>선반 예제 소재의 예상 형상</h2></div></div><div className="stock-body"><div><p>예제 소재는 반경 10mm, Z -6~−1mm의 원통입니다. 선택한 예제 공구표의 공구 끝을 원형으로 이상화하고 절삭 이동으로 지나간 부분을 축 대칭으로 제거합니다.</p><p>G01/G02/G03은 절삭, G00은 급속 이동으로 가정합니다. 해석이 중단된 파일은 완성 형상을 표시하지 않습니다.</p><button className="button primary" disabled={!result||!options.linuxcncLatheToolReference||busy} onClick={()=>setRequest(n=>n+1)}>{busy?'계산 중':'선반 소재 형상 계산'}</button><p role="status">{busy?'계산 중…':shape?.ok?`예상 형상 · 제거된 단면 격자 ${shape.removed}개`:shape?.message??'선반 예제 공구표를 선택해 NC를 해석한 뒤 계산하세요.'}{shape&&!shape.ok&&shape.sourceLine?` (행 ${shape.sourceLine})`:''}</p><p className="stock-caution">0.2mm 단면 격자와 원호 선분 근사입니다. 실제 인서트 날·공구 홀더·고정구·스핀들 상태 및 나사산은 계산하지 않으며, 가공 안전이나 치수 적합성을 판정할 수 없습니다.</p></div>{shape?.ok&&<div ref={host} className="stock-canvas" aria-label="선반 예제 소재 3D 표시"/>}</div></section>;
+ return <section className="stock-example" aria-label="선반 예제 소재 형상"><div className="panel-head"><div><span className="section-tag">LATHE / EXAMPLE STOCK</span><h2>선반 예제 소재의 예상 형상</h2></div></div><div className="stock-body"><div><p>예제 소재는 반경 10mm, Z -6~−1mm의 원통입니다. 공구가 지나간 단면을 축 대칭으로 제거합니다.</p><div className="stock-controls"><label>예제 공구 형상 <select aria-label="예제 공구 형상" value={model} onChange={e=>setModel(e.target.value as LatheInsertModel)}><option value="round-nose">원형 공구 끝</option><option value="example-insert">원형 끝과 예제 인서트 단면</option></select></label></div><p>인서트 예제는 반경 0.2mm 원형 끝에 중심에서 X+2mm, Z+2mm까지 뻗는 가상 인서트 단면을 더합니다. 모든 공구에 같은 형상을 적용하며 실제 공구표나 인서트 규격이 아닙니다.</p><p>G01/G02/G03은 절삭, G00은 급속 이동으로 가정합니다. 해석이 중단된 파일은 완성 형상을 표시하지 않습니다.</p><button className="button primary" disabled={!result||!options.linuxcncLatheToolReference||busy} onClick={()=>setRequest(n=>n+1)}>{busy?'계산 중':'선반 소재 형상 계산'}</button><p role="status">{busy?'계산 중…':shape?.ok?`예상 형상 · 제거된 단면 격자 ${shape.removed}개`:shape?.message??'선반 예제 공구표를 선택해 NC를 해석한 뒤 계산하세요.'}{shape&&!shape.ok&&shape.sourceLine?` (행 ${shape.sourceLine})`:''}</p><p className="stock-caution">0.2mm 단면 격자와 원호 선분 근사입니다. 실제 인서트 날·공구 홀더·고정구·스핀들 상태 및 나사산은 계산하지 않으며, 가공 안전이나 치수 적합성을 판정할 수 없습니다.</p></div>{shape?.ok&&<div ref={host} className="stock-canvas" aria-label="선반 예제 소재 3D 표시"/>}</div></section>;
 }

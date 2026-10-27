@@ -39,3 +39,12 @@ it('detects example-stock contact on the LinuxCNC multipass return',()=>{
  const outcome=simulateLatheStock(parsed,options);expect(outcome.ok).toBe(false);
  if(!outcome.ok){expect(outcome.message).toContain('급속');expect(outcome.sourceLine).toBe(source.split(/\r?\n/).findIndex(line=>line.startsWith('G70 '))+1);}
 });
+it('sweeps the example insert body as well as the round nose',()=>{
+ const code='G21 G90 G18 G8\nT1 M6\nG0 X12 Z0\nG0 Z-3\nG1 X8 F100\nG0 X12\nM2';
+ const parsed=parseGcode(code,options);expect(parsed.status).toBe('SUPPORTED');
+ const round=simulateLatheStock(parsed,options,'round-nose'),insert=simulateLatheStock(parsed,options,'example-insert');
+ expect(round.ok).toBe(true);expect(insert.ok).toBe(true);
+ if(round.ok&&insert.ok){expect(insert.removed).toBeGreaterThan(round.removed);expect(insert.remaining[17*50+47]).toBe(0);expect(round.remaining[17*50+47]).toBe(1);}
+ const wrongOrientation={...options,linuxcncLatheToolReference:{tools:{'1':{diameter:.4,orientation:3,offsetX:0,offsetZ:0}}}};
+ expect(simulateLatheStock(parsed,wrongOrientation,'example-insert')).toMatchObject({ok:false,message:expect.stringContaining('방향 2')});
+});
