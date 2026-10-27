@@ -24,3 +24,15 @@ test('file replacement and local processing', async ({page}) => {
  await expect(page.locator('.code-list')).not.toContainText('X10');
  expect(outgoing).toEqual([]);
 });
+
+test('diagnostics and line jump show the source even without a segment', async ({page}) => {
+ await page.goto('/nc_tracer/');
+ const file=page.locator('input[type=file]');
+ await file.setInputFiles({name:'unsupported.nc',mimeType:'text/plain',buffer:Buffer.from('G21 G90 G00 X0 Y0 Z0\nG01 X10\nG54\nG01 X20')});
+ await expect(page.getByRole('region', {name:'해석 진단'})).toContainText('행 3');
+ await page.getByRole('button',{name:/행 3/}).click();
+ await expect(page.locator('.code-line.selected')).toContainText('G54');
+ await page.getByLabel('행으로 이동').fill('4');
+ await page.getByRole('button',{name:'이동',exact:true}).click();
+ await expect(page.locator('.code-line.selected')).toContainText('G01 X20');
+});
