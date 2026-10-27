@@ -2,6 +2,7 @@ import {expect,it} from 'vitest';
 import {readFileSync} from 'node:fs';
 import {parseGcode} from '../../src/parser/gcode';
 import {simulateLatheStock,LATHE_STOCK_PRESETS} from '../../src/simulation/latheStock';
+import {stockComponents} from '../../src/simulation/stockComponents';
 const options={controllerProfile:'linuxcnc' as const,linuxcncLatheToolReference:{tools:{'1':{diameter:.4,orientation:2,offsetX:0,offsetZ:0}}},initialPosition:{x:0,y:0,z:0},initialDistanceMode:'absolute' as const};
 const src='G21 G90 G18 G8\nT1 M6\nG43\nG0 X10 Z1\nG41\nG1 X8 Z1 F100\nG1 X8 Z-5\nG1 X11 Z-5\nG40\nG0 X12\nM2';
 it('removes stock using the loaded example tool and retains uncompensated material',()=>{
@@ -116,6 +117,16 @@ it('calculates the complete original G76 point-table path with separately assume
  const grid=LATHE_STOCK_PRESETS['thread-demo'];
  const shape=simulateLatheStock(parsed,{...pointOptions,linuxcncLatheToolReference:{tools}},'round-nose',grid,false,{'9':{width:1,length:2}},{'4':{length:2}});
  if(!shape.ok)throw new Error(shape.message);expect(shape.angularCells).toBe(48);expect(shape.removed).toBeGreaterThan(0);expect(shape.remaining.some(v=>v===1)).toBe(true);
+ // At radius 2.45 mm, measure repeated thread grooves in the straight
+ // portion. The original specifies P0.05 inch = 1.27 mm/revolution.
+ const grooveStarts:number[]=[];let inGroove=false;
+ for(let z=45;z<125;z++){const empty=!shape.remaining[(z*grid.radialCells+24)*grid.angularSegments];if(empty&&!inGroove)grooveStarts.push(z);inGroove=empty;}
+ expect(grooveStarts.length).toBeGreaterThanOrEqual(5);
+ for(let i=1;i<grooveStarts.length;i++)expect(Math.abs((grooveStarts[i]-grooveStarts[i-1])*grid.step-1.27)).toBeLessThanOrEqual(grid.step);
+ // The 1 mm example parting blade sweeps the entire radius around Z=-15.24 mm.
+ const section=(z:number)=>shape.remaining.slice(z*grid.radialCells*grid.angularSegments,(z+1)*grid.radialCells*grid.angularSegments);
+ expect(section(10).every(v=>v===0)).toBe(true);expect(section(5).some(v=>v===1)).toBe(true);expect(section(20).some(v=>v===1)).toBe(true);
+ const pieces=stockComponents(shape.remaining,grid,shape.angularCells!);expect(pieces).toHaveLength(2);expect(pieces[0].zMax).toBeCloseTo(-15.7);expect(pieces[1].zMin).toBeCloseTo(-14.7);
  let mixedRings=0;for(let i=0;i<shape.remaining.length;i+=48){const ring=shape.remaining.slice(i,i+48);if(ring.some(v=>v===0)&&ring.some(v=>v===1))mixedRings++;}expect(mixedRings).toBeGreaterThan(0);
 });
 it('sweeps a distinct parting blade across its stated width, including rapid collision checks',()=>{
