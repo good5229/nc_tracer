@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import Viewer3D from './components/Viewer3D';
 import StockExample from './components/StockExample';
 import NcStock from './components/NcStock';
+import ReferenceMill from './components/ReferenceMill';
 import FileComparison from './components/FileComparison';
 import PathStats, { filterPathSegments, PATH_MOTIONS, type PathFilters } from './components/PathStats';
 import type { MotionSegment, ParseResult, ParserOptions } from './parser/gcode';
@@ -70,6 +71,7 @@ export default function App() {
     <div className="metrics"><div><span>현재 위치 / mm</span><strong>X {fmt(active?.end.x)} <em>Y</em> {fmt(active?.end.y)} <em>Z</em> {fmt(active?.end.z)}</strong></div><div><span>선택된 블록 / 시작점 mm</span><strong>{active ? `${active.motion} · 행 ${active.sourceLine}${active.nBlock ? ` · N${active.nBlock}` : ''} / ${fmt(active.start.x)}, ${fmt(active.start.y)}, ${fmt(active.start.z)}` : '—'}</strong></div><div><span>해석 구간 / 경고 · 선택 블록 단위 / 좌표 모드</span><strong>{result?.segments.length ?? 0} <em>/</em> {result?.warnings.length ?? 0} · {active?.unit ?? '?'} / {active?.distanceMode ?? '?'}</strong></div></div>
    </section></div>
    <NcStock key={`nc-stock-${sourceGeneration}`} source={source} profile={appliedOptions.controllerProfile ?? 'generic'} onExample={()=>{setProfile('generic');run(STOCK_NC,'예제 소재용 NC',undefined,'generic',false,{x:0,y:0,z:12});}}/>
+   <ReferenceMill key={`reference-${sourceGeneration}`} matches={source===subroutines} onSelect={()=>{setProfile('linuxcnc');setUsePointSetup(false);run(subroutines,'useful-subroutines.ngc',undefined,'linuxcnc',true);}}/>
    <StockExample />
    {result && <PathStats segments={segments} filters={filters} onFiltersChange={setFilters}/>}
    <FileComparison key={`comparison-${sourceGeneration}`} source={source} result={result} options={appliedOptions} />

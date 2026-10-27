@@ -6,9 +6,9 @@ export type NcStockResult = {ok:true; remaining:Uint8Array; removed:number} | {o
 const RADIUS = 2, LENGTH = 8, MAX_CHECKS = 12_000_000;
 
 // Returns whether the center of a cell intersects a vertical cylinder swept along a line.
-function containsSweptPoint(p:Point, a:Point, b:Point):boolean {
+export function containsSweptPoint(p:Point, a:Point, b:Point, radius=RADIUS, length=LENGTH):boolean {
   const dx=b.x-a.x,dy=b.y-a.y,dz=b.z-a.z, x=a.x-p.x,y=a.y-p.y;
-  const aa=dx*dx+dy*dy, bb=2*(x*dx+y*dy), cc=x*x+y*y-RADIUS*RADIUS;
+  const aa=dx*dx+dy*dy, bb=2*(x*dx+y*dy), cc=x*x+y*y-radius*radius;
   let lo=0,hi=1;
   if (aa===0) { if(cc>0) return false; }
   else {
@@ -16,8 +16,8 @@ function containsSweptPoint(p:Point, a:Point, b:Point):boolean {
     const root=Math.sqrt(discriminant); lo=Math.max(lo,(-bb-root)/(2*aa)); hi=Math.min(hi,(-bb+root)/(2*aa));
   }
   // A point is inside the cutting cylinder when tipZ <= pointZ <= tipZ + LENGTH.
-  if(dz===0) { if(p.z<a.z || p.z>a.z+LENGTH)return false; }
-  else { const t0=(p.z-LENGTH-a.z)/dz, t1=(p.z-a.z)/dz;lo=Math.max(lo,Math.min(t0,t1));hi=Math.min(hi,Math.max(t0,t1)); }
+  if(dz===0) { if(p.z<a.z || p.z>a.z+length)return false; }
+  else { const t0=(p.z-length-a.z)/dz, t1=(p.z-a.z)/dz;lo=Math.max(lo,Math.min(t0,t1));hi=Math.min(hi,Math.max(t0,t1)); }
   return lo<=hi;
 }
 function points(segment:MotionSegment): Point[] {
