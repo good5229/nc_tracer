@@ -2,7 +2,7 @@
  * Geometry-only G71.1 expansion derived from LinuxCNC 2.9.4 interp_g7x.cc.
  * LinuxCNC is distributed under GPL-2.0; see demo/COPYING and
  * https://github.com/LinuxCNC/linuxcnc/blob/v2.9.4/src/emc/rs274ngc/interp_g7x.cc.
- * G71.2 remains fail-closed pending trace parity.
+ * G71.2 accepts only a bounded straight-line, zero-allowance subset.
  */
 export const LINUXCNC_G71_COMPAT_VERSION = '2.9.4';
 export type RoughPoint = { x: number; z: number };
@@ -235,11 +235,20 @@ export function expandLinuxCncG71(input: RoughCycleInput): RoughingResult {
   const scale = input.units === 'inch' ? 25.4 : 1;
   const d = input.D ?? 0, step = input.I ?? 1, retract = input.R ?? 0.5;
   if (!Number.isInteger(input.sourceLine) || input.sourceLine < 1 || !input.rawCode.trim() || !finite(input.position)) return fail('INVALID_SOURCE_OR_POSITION', 'Cycle source and current X/Z position must be present and finite.');
-  if (input.cycle === 'G71.2') return fail('UNSUPPORTED_G71_2', 'LinuxCNC 2.9.4 G71.2 pocket expansion is not yet verified for this geometry.');
+  if (input.cycle === 'G71.2' && (d !== 0 || input.profile.length > 100 || input.profile.some(s => s.motion === 'G02' || s.motion === 'G03' || s.corner))) return fail('UNSUPPORTED_G71_2', 'G71.2 currently supports only straight profiles with D0 and no A/C corners.');
   if (!input.profile.length || input.profile.length > G71_MAX_PROFILE_SEGMENTS) return fail('PROFILE_LIMIT', `Profile must contain 1 to ${G71_MAX_PROFILE_SEGMENTS} segments.`);
   if (![d, step, retract, input.X ?? input.position.x, input.Z ?? input.position.z].every(Number.isFinite) || d < 0 || step <= 0 || retract < 0) return fail('INVALID_CYCLE_WORDS', 'G71 D and R must be non-negative and I must be positive.');
   if (input.profile.some((s) => !finite(s.end) || !Number.isInteger(s.sourceLine) || s.sourceLine < 1 || !s.rawCode.trim() || (s.corner && (!Number.isFinite(s.corner.amount) || s.corner.amount < 0)))) return fail('INVALID_PROFILE', 'Profile moves, source mappings, and corner dimensions must be valid.');
   const initial = toP(input.position), target = { x: input.X ?? input.position.x, z: input.Z ?? input.position.z };
+  if (input.cycle === 'G71.2') {
+    if (step * scale < 0.01 || retract * scale < 0.01) return fail('UNSUPPORTED_G71_2', 'G71.2 increment and retract must be at least 0.01 mm in this subset.');
+    let previous = target;
+    for (const s of input.profile) {
+      const dx = Math.abs(s.end.x - previous.x) * scale, dz = Math.abs(s.end.z - previous.z) * scale;
+      if ((dx > 0 && dx < 0.01) || (dz > 0 && dz < 0.01)) return fail('UNSUPPORTED_G71_2', 'G71.2 tiny profile movements are not supported.');
+      previous = s.end;
+    }
+  }
   const cycleStart = { z: target.z * scale, x: target.x * scale };
   const origin = { z: initial.z * scale, x: initial.x * scale };
   const moves: RoughMove[] = [];
@@ -364,7 +373,8 @@ function offsetContour(path: Seg[], distance: number, machineScale: number): Seg
   return path;
 }
 
-function runPockets(path: Seg[], cycle: number, location: P, delta: number, retract: number, emit: Sink, levels: number[], pocketStarts: P[] = [{ ...location }], startIndex = 0): void {
+function runPockets(path: Seg[], cycle: number, location: P, delta: number, retract: number, emit: Sink, levels: number[], pocketStarts: P[] = [{ ...location }], startIndex = 0, depth = 0): void {
+  if (depth > 100) throw new Error('G71 pocket recursion exceeds the supported limit.');
   const top = pocketStarts.at(-1)!.x;
   let x = top, steps = 0, p = startIndex;
   if (cycle === 2) {
@@ -377,12 +387,12 @@ function runPockets(path: Seg[], cycle: number, location: P, delta: number, retr
       if (cycle === 1) {
         for (; p < path.length; p += 1) climbOnly(path[p], location, emit);
       } else {
-        for (; p < path.length; p += 1) if (climb(path[p], location, emit)) {
+        for (; p < path.length; p += 1) if (climb(path[p], location, emit, cycle === 3)) {
           if (cycle === 3) {
             if (location.x > pocketStarts.at(-1)!.x + TOL && pocketStarts.length > 1) pocketStarts.pop();
             if (pocketStarts.length === 1) pocketStarts.push({ ...location });
           }
-          runPockets(path, cycle, location, delta, retract, emit, levels, pocketStarts, p);
+          runPockets(path, cycle, location, delta, retract, emit, levels, pocketStarts, p, depth + 1);
           return;
         }
       }
@@ -398,8 +408,12 @@ function runPockets(path: Seg[], cycle: number, location: P, delta: number, retr
       const distance = Math.abs(destination - location.z);
       if (destination - TOL > location.z) continue;
       if (distance < TOL) {
+        if (cycle === 3 && distance > 0) throw new Error('G71.2 cannot discard a nonzero short move.');
         if (ip === p) continue;
-        if (near(location, path[ip].a)) { p = ip; found = true; break; }
+        if (near(location, path[ip].a)) {
+          if (cycle === 3 && (location.x !== path[ip].a.x || location.z !== path[ip].a.z)) throw new Error('G71.2 cannot merge distinct coordinates.');
+          p = ip; found = true; break;
+        }
         steps += 1; x = top - steps * delta; found = true; break;
       }
       const contact = { z: destination, x: location.x };
@@ -448,9 +462,10 @@ function dive(s: Seg, location: P, x: number, emit: Sink, fast: boolean): boolea
   return false;
 }
 
-function climb(s: Seg, location: P, emit: Sink): boolean {
+function climb(s: Seg, location: P, emit: Sink, strict = false): boolean {
   if (s.kind === 'line') {
     if (s.b.x + TOL < s.a.x) return true;
+    if (strict && (location.x !== s.a.x || location.z !== s.a.z)) throw new Error('G71.2 contour climb is not exactly continuous.');
     if (!near(location, s.a, 1e-3)) throw new Error('G71 contour climb is discontinuous.');
     emit('G01', s.b, 'profile-follow', s.meta); Object.assign(location, s.b); return false;
   }

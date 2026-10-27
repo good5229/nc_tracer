@@ -250,30 +250,32 @@ function parseCore(text: string, options: ParserOptions, originalSource = text):
     const pathControl = linuxcnc && gWords.includes(64);
     const dwell = linuxcnc && gWords.includes(4);
     const thread = linuxcnc && gWords.includes(76);
-    const rough = pointReference && gWords.includes(71.1);
+    const rough = pointReference && (gWords.includes(71.1) || gWords.includes(71.2));
+    const finish = pointReference && gWords.includes(70);
     if (pathControl || dwell) knownLetters.add('P');
     if (pathControl) knownLetters.add('Q');
     if (thread) for (const letter of ['P','Q','H','E','L','D']) knownLetters.add(letter);
     if (rough) for (const letter of ['Q','D']) knownLetters.add(letter);
+    if (finish) for (const letter of ['Q','D','E','P']) knownLetters.add(letter);
     const unsupportedLetter = tokens.find((t) => !knownLetters.has(t.letter));
     if (unsupportedLetter || byLetter.has('M') && mWords.some((m) => !(linuxcnc ? [2, 3, 4, 5, 30, ...(pointReference ? [6] : [])] : [2, 30]).includes(m))) {
       warn(sourceLine, 'UNSUPPORTED_BLOCK', 'Unsupported word or machine command; interpretation stopped here');
       status = segments.length ? 'PARTIAL' : 'UNSUPPORTED'; stopped = true; break;
     }
 
-    const supportedG = new Set([0, 1, 2, 3, 17, 18, 19, 20, 21, 90, 91, ...(linuxcnc ? [4, 8, 61, 61.1, 64, 76] : []), ...(pointReference ? [40, 41, 42, 43, 49, 54, 71.1, 92, 92.1] : [])]);
+    const supportedG = new Set([0, 1, 2, 3, 17, 18, 19, 20, 21, 90, 91, ...(linuxcnc ? [4, 8, 61, 61.1, 64, 76] : []), ...(pointReference ? [40, 41, 42, 43, 49, 54, 70, 71.1, 71.2, 92, 92.1] : [])]);
     const badG = gWords.find((g) => !supportedG.has(g));
     if (badG !== undefined) {
       warn(sourceLine, 'UNSUPPORTED_GCODE', `G${badG} is outside the supported profile; interpretation stopped here`);
       status = segments.length ? 'PARTIAL' : 'UNSUPPORTED'; stopped = true; break;
     }
     const conflicts = [
-      [0, 1, 2, 3, 71.1, 71.2, 76], [90, 91], [20, 21], [17, 18, 19], [61, 61.1, 64], [40,41,42], [43,49], [92,92.1],
+      [0, 1, 2, 3, 70, 71.1, 71.2, 76], [90, 91], [20, 21], [17, 18, 19], [61, 61.1, 64], [40,41,42], [43,49], [92,92.1],
     ].some((group) => group.filter((g) => gWords.includes(g)).length > 1);
     if (conflicts) {
       warn(sourceLine, 'CONFLICTING_MODAL', 'Conflicting modal groups in one block'); status = 'INVALID'; stopped = true; break;
     }
-    if (pointReference && ((cutterCompActive && gWords.some(g=>[41,42,54,71.1,92,92.1].includes(g))) || ((gWords.includes(41) || gWords.includes(42)) && gWords.some(g=>[54,71.1,92,92.1].includes(g))))) {
+    if (pointReference && ((cutterCompActive && gWords.some(g=>[41,42,54,70,71.1,71.2,92,92.1].includes(g))) || ((gWords.includes(41) || gWords.includes(42)) && gWords.some(g=>[54,70,71.1,71.2,92,92.1].includes(g))))) {
       warn(sourceLine,'INVALID_CUTTER_COMP','Coordinate or G71 changes are not supported while cutter compensation is active');status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;
     }
     if ((pathControl || dwell) && (['P', 'Q'].some(letter => (byLetter.get(letter)?.length ?? 0) > 1 || (byLetter.get(letter)?.[0] ?? 0) < 0) || (dwell && (!byLetter.has('P') || pathControl || ['X','Y','Z','I','J','K','R'].some(letter => byLetter.has(letter)) || gWords.some(g => [0,1,2,3].includes(g)))) || (pathControl && ((byLetter.has('Q') && !byLetter.has('P')) || ((byLetter.has('P') || byLetter.has('Q')) && ['X','Y','Z','I','J','K','R'].some(letter => byLetter.has(letter))))))) {
@@ -319,7 +321,7 @@ function parseCore(text: string, options: ParserOptions, originalSource = text):
     if (byLetter.has('T')) state.tool = byLetter.get('T')![0];
 
     if (pointReference && (gWords.includes(92) || gWords.includes(92.1))) {
-      if (gWords.some(g=>[0,1,2,3,71.1,71.2,76].includes(g)) || mWords.length || (gWords.includes(92.1) && ['X','Y','Z'].some(axis=>byLetter.has(axis))) || (gWords.includes(92) && (!state.unit || !['X','Y','Z'].some(axis=>byLetter.has(axis))))) {
+      if (gWords.some(g=>[0,1,2,3,70,71.1,71.2,76].includes(g)) || mWords.length || (gWords.includes(92.1) && ['X','Y','Z'].some(axis=>byLetter.has(axis))) || (gWords.includes(92) && (!state.unit || !['X','Y','Z'].some(axis=>byLetter.has(axis))))) {
         warn(sourceLine,'INVALID_G92','G92 needs known units and at least one axis; G92.1 must not contain axis words'); Object.assign(state,blockStartState); status='INVALID';stopped=true;break;
       }
       for (const axis of ['x','y','z'] as const) {
@@ -339,18 +341,41 @@ function parseCore(text: string, options: ParserOptions, originalSource = text):
       continue;
     }
 
+    if (finish) {
+      const q=byLetter.get('Q')?.[0], d=byLetter.get('D')?.[0] ?? 0, e=byLetter.get('E')?.[0] ?? 0, passes=byLetter.get('P')?.[0] ?? 1;
+      const invalid=state.plane!=='XZ' || state.unit!=='mm' || state.distanceMode!=='absolute' || !latheRadiusMode || !renderablePosition(state.position) || cutterCompActive || mWords.length>0 || gWords.length!==1 || ['I','J','K','R'].some(letter=>byLetter.has(letter)) || q===undefined || !Number.isInteger(q) || q<1 || d!==0 || e!==0 || passes!==1 || byLetter.has('Y') || ['Q','X','Z','D','E','P'].some(letter=>(byLetter.get(letter)?.length ?? 0)>1);
+      if(invalid){warn(sourceLine,'UNSUPPORTED_G70','G70 requires G8/G18/G21/G90 point-tool reference, one pass, D0/E0, and no cutter compensation');Object.assign(state,blockStartState);status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;}
+      const routine=findLinuxCncSubroutine(originalSource,q!);
+      if(!routine){warn(sourceLine,'UNKNOWN_G70_PROFILE',`Subroutine O${q} is not defined`);Object.assign(state,blockStartState);status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;}
+      const target={x:byLetter.get('X')?.[0] ?? state.position.x!,z:byLetter.get('Z')?.[0] ?? state.position.z!};
+      const resolved=resolveLinuxCncProfile(routine,target);
+      if(!resolved.ok || resolved.profile.length<2 || resolved.profile.length>100 || resolved.profile[0].motion!=='G00' || resolved.profile.some((p,i)=>p.corner || (i>0 && p.motion!=='G01')) || resolved.profile.some((p,i)=>i>0 && p.end.z>resolved.profile[i-1].end.z)) {
+        warn(sourceLine,'UNSUPPORTED_G70_PROFILE','G70 supports a numeric straight-line contour with one initial rapid and decreasing Z only');Object.assign(state,blockStartState);status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;
+      }
+      const points=[{...target,motion:'G00' as const},...resolved.profile.map((p,i)=>({...p.end,motion:i===0?'G00' as const:'G01' as const}))];
+      const prepared:MotionSegment[]=[];let pos={...state.position};
+      for(const [index,point] of points.entries()){
+        const end={...pos,x:point.x,z:point.z}, startReference=toReference(pos),endReference=toReference(end);
+        if(!renderablePosition(endReference)){warn(sourceLine,'FLOAT32_PRECISION_LOSS','G70 coordinates exceed display precision');status='INVALID';stopped=true;break;}
+        if(pos.x!==end.x || pos.z!==end.z)prepared.push({id:`line-${sourceLine}-segment-${index}`,sourceLine,rawCode,motion:point.motion,start:startReference,end:endReference,unit:state.unit,distanceMode:state.distanceMode,plane:state.plane,status:'SUPPORTED',warningIds:[],...(state.feed!==null?{feed:state.feed}:{}),...(state.tool!==null?{tool:state.tool}:{})});
+        pos=end;
+      }
+      if(stopped){Object.assign(state,blockStartState);break;}
+      segments.push(...prepared);state.position=pos;state.motionMode=null;continue;
+    }
+
     if (rough) {
       const words=['Q','X','Z','D','I','R'];
       const q=byLetter.get('Q')?.[0];
       if (state.plane !== 'XZ' || state.unit !== 'mm' || state.distanceMode !== 'absolute' || !latheRadiusMode || !renderablePosition(state.position) || mWords.length || q === undefined || !Number.isInteger(q) || q < 1 || words.some(letter=>(byLetter.get(letter)?.length ?? 0)>1) || byLetter.has('Y')) {
-        warn(sourceLine,'INVALID_G71_SETUP','G71.1 requires the point-tool reference, G8/G18/G21/G90, a known position and a numbered Q profile');Object.assign(state,blockStartState);status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;
+        warn(sourceLine,'INVALID_G71_SETUP','G71 requires the point-tool reference, G8/G18/G21/G90, a known position and a numbered Q profile');Object.assign(state,blockStartState);status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;
       }
       const routine=findLinuxCncSubroutine(originalSource,q);
       if(!routine){warn(sourceLine,'UNKNOWN_G71_PROFILE',`Subroutine O${q} is not defined`);Object.assign(state,blockStartState);status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;}
       const target={x:byLetter.get('X')?.[0] ?? state.position.x!,z:byLetter.get('Z')?.[0] ?? state.position.z!};
       const profile=resolveLinuxCncProfile(routine,target);
       if(!profile.ok){warn(sourceLine,'UNSUPPORTED_G71_PROFILE',`Profile line ${profile.sourceLine}: ${profile.message}`);Object.assign(state,blockStartState);status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;}
-      const result=expandLinuxCncG71({cycle:'G71.1',position:{x:state.position.x!,z:state.position.z!},X:target.x,Z:target.z,profile:profile.profile,units:'mm',D:byLetter.get('D')?.[0],I:byLetter.get('I')?.[0],R:byLetter.get('R')?.[0],sourceLine,rawCode});
+      const result=expandLinuxCncG71({cycle:gWords.includes(71.2)?'G71.2':'G71.1',position:{x:state.position.x!,z:state.position.z!},X:target.x,Z:target.z,profile:profile.profile,units:'mm',D:byLetter.get('D')?.[0],I:byLetter.get('I')?.[0],R:byLetter.get('R')?.[0],sourceLine,rawCode});
       if(!result.ok){warn(sourceLine,result.error.code,`G71 경로를 정확히 확인할 수 없어 이 구간을 그리지 않았습니다. ${result.error.message}`);Object.assign(state,blockStartState);status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;}
       const prepared:MotionSegment[]=[];let addedVertices=0;
       for(const [index,move] of result.moves.entries()){

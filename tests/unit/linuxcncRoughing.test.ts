@@ -37,8 +37,8 @@ describe('expandLinuxCncG71', () => {
     expect(result.moves.some((move) => move.profileSourceLine === 11 && move.profileRawCode?.includes('G3'))).toBe(true);
   });
 
-  it('fails closed for G71.2 until pocket expansion parity is verified', () => {
-    const result = expandLinuxCncG71({ ...base, cycle: 'G71.2' });
+  it('fails closed for G71.2 with unverified allowance', () => {
+    const result = expandLinuxCncG71({ ...base, cycle: 'G71.2', D: 0.1 });
     expect(result).toMatchObject({ ok: false, moves: [], error: { code: 'UNSUPPORTED_G71_2' } });
   });
 

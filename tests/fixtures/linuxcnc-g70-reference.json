@@ -1,0 +1,33 @@
+{
+  "source": "LinuxCNC 2.9.4 rs274 run 40462562108, point tool, G8, canonical mm output",
+  "moves": [
+    {
+      "motion": "G00",
+      "end": [
+        10.0,
+        1.0
+      ]
+    },
+    {
+      "motion": "G00",
+      "end": [
+        4.0,
+        1.0
+      ]
+    },
+    {
+      "motion": "G01",
+      "end": [
+        4.0,
+        -10.0
+      ]
+    },
+    {
+      "motion": "G01",
+      "end": [
+        10.0,
+        -10.0
+      ]
+    }
+  ]
+}
