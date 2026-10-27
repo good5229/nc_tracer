@@ -23,3 +23,53 @@ export function linuxCncLatheNoseEntry(start:LatheNosePoint,end:LatheNosePoint,d
  if(![center.x,center.z,toolOrigin.x,toolOrigin.z].every(Number.isFinite))return {ok:false,code:'INVALID_COORDINATE'};
  return {ok:true,center,toolOrigin,programmedEnd:{...end}};
 }
+
+export type LatheLine={end:LatheNosePoint;motion:'G00'|'G01';sourceLine:number};
+export type LatheCompMove={start:LatheNosePoint;end:LatheNosePoint;motion:'G00'|'G01'|'G02'|'G03';sourceLine:number;center?:LatheNosePoint};
+export type LatheCompLines={ok:true;moves:LatheCompMove[]}|{ok:false;code:string;sourceLine:number};
+const originOffset=(orientation:number,r:number):LatheNosePoint=>({x:orientation===2||orientation===6||orientation===1?-r:orientation===3||orientation===8||orientation===4?r:0,z:orientation===2||orientation===7||orientation===3?-r:orientation===1||orientation===5||orientation===4?r:0});
+const plus=(a:LatheNosePoint,b:LatheNosePoint):LatheNosePoint=>({x:a.x+b.x,z:a.z+b.z});
+const cross=(a:LatheNosePoint,b:LatheNosePoint)=>a.z*b.x-a.x*b.z;
+const sub=(a:LatheNosePoint,b:LatheNosePoint):LatheNosePoint=>({x:a.x-b.x,z:a.z-b.z});
+const times=(a:LatheNosePoint,k:number):LatheNosePoint=>({x:a.x*k,z:a.z*k});
+
+/**
+ * G18 straight-line compensation, including line-to-line lookahead. This does
+ * not implement compensated input arcs, G40 transitions, tool-length offsets,
+ * or control-flow parsing. It is deliberately not connected to the viewer yet.
+ */
+export function linuxCncLatheNoseLines(start:LatheNosePoint,lines:LatheLine[],diameter:number,side:'left'|'right',orientation:number):LatheCompLines {
+ const error=(code:string,sourceLine:number):LatheCompLines=>({ok:false,code,sourceLine});
+ if(!lines.length||lines.length>10000)return error('INVALID_LINE_COUNT',lines[0]?.sourceLine??0);
+ if(lines.some(l=>!Number.isInteger(l.sourceLine)||l.sourceLine<1||!['G00','G01'].includes(l.motion)||![l.end.x,l.end.z].every(Number.isFinite)))return error('INVALID_LINE',lines.find(l=>!Number.isInteger(l.sourceLine)||l.sourceLine<1)?.sourceLine??lines[0].sourceLine);
+ const first=linuxCncLatheNoseEntry(start,lines[0].end,diameter,side,orientation);
+ if(!first.ok)return error(first.code,lines[0].sourceLine);
+ const radius=diameter/2, shift=originOffset(orientation,radius),toolPoint=(point:LatheNosePoint)=>plus(point,shift);
+ const moves:LatheCompMove[]=[{start:{...start},end:first.toolOrigin,motion:lines[0].motion,sourceLine:lines[0].sourceLine}];
+ let programStart={...start},programPoint={...lines[0].end},center={...first.center};
+ for(let i=1;i<lines.length;i++){
+  const line=lines[i],a=sub(programPoint,programStart),b=sub(line.end,programPoint),al=Math.hypot(a.x,a.z),bl=Math.hypot(b.x,b.z);
+  if(!Number.isFinite(al)||!Number.isFinite(bl)||al===0||bl===0)return error('INVALID_COMPENSATED_MOVE',line.sourceLine);
+  const u=times(a,1/al),v=times(b,1/bl),sign=side==='left'?1:-1;
+  const normal=(direction:LatheNosePoint):LatheNosePoint=>({z:-sign*direction.x,x:sign*direction.z});
+  const nextStart=plus(programPoint,times(normal(v),radius)),nextEnd=plus(line.end,times(normal(v),radius));
+  if(![nextStart.x,nextStart.z,nextEnd.x,nextEnd.z].every(Number.isFinite))return error('INVALID_COORDINATE',line.sourceLine);
+  const turn=cross(u,v),dot=u.x*v.x+u.z*v.z;
+  if(turn===0 && dot<0)return error('REVERSING_CORNER',line.sourceLine);
+  const cornerAngle=Math.atan2(Math.abs(turn),dot);
+  if(turn!==0 && (cornerAngle<=0.01 || Math.PI-cornerAngle<=0.01))return error('UNSUPPORTED_CORNER_TOLERANCE',line.sourceLine);
+  if(turn!==0 && turn*sign>0){
+   const delta=sub(nextStart,center),t=cross(delta,v)/turn,s=cross(delta,u)/turn;
+   if(!Number.isFinite(t)||!Number.isFinite(s)||t>0||s<0||-t>al||s>bl)return error('CONCAVE_GOUGING',line.sourceLine);
+   const intersection=plus(center,times(u,t)),tip=toolPoint(intersection);
+   if(![intersection.x,intersection.z,tip.x,tip.z].every(Number.isFinite))return error('INVALID_COORDINATE',line.sourceLine);
+   moves[moves.length-1].end=tip;center=intersection;
+  } else if(turn!==0){
+   const end=toolPoint(nextStart), arcCenter=toolPoint(programPoint);
+   moves.push({start:toolPoint(center),end,motion:line.motion==='G00'?'G00':side==='left'?'G02':'G03',sourceLine:line.sourceLine,...(line.motion==='G01'?{center:arcCenter}:{})});center=nextStart;
+  }
+  moves.push({start:toolPoint(center),end:toolPoint(nextEnd),motion:line.motion,sourceLine:line.sourceLine});
+  center=nextEnd;programStart=programPoint;programPoint={...line.end};
+ }
+ return {ok:true,moves};
+}
