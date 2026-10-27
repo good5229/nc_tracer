@@ -30,6 +30,8 @@ jobs:
         with:
           path: dist
   deploy:
+    outputs:
+      page_url: ${{ steps.deployment.outputs.page_url }}
     needs: build
     environment:
       name: github-pages
@@ -38,3 +40,17 @@ jobs:
     steps:
       - uses: actions/deploy-pages@v4
         id: deployment
+  public-smoke:
+    needs: deploy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chrome msedge
+      - run: node scripts/public-smoke.mjs
+        env:
+          PAGES_URL: ${{ needs.deploy.outputs.page_url }}
