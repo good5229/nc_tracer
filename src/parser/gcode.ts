@@ -38,6 +38,7 @@ export type ParseResult = {
   finalState: ModalState;
 };
 export type ParserOptions = {
+  controllerProfile?: 'generic' | 'linuxcnc';
   initialPosition?: Vector3;
   initialUnit?: 'mm' | 'inch';
   initialDistanceMode?: 'absolute' | 'incremental';
@@ -186,7 +187,7 @@ export function parseGcode(text: string, options: ParserOptions = {}): ParseResu
     let tokens: ReturnType<typeof tokenize>;
     try {
       const code = stripComments(rawCode);
-      if (['#', '[', ']'].some(character => code.includes(character)) || /\bO\s*</i.test(code) || /\b(?:IF|WHILE|GOTO|ENDWHILE)\b/i.test(code)) {
+      if (['#', '[', ']'].some(character => code.includes(character)) || /\bO\s*(?:<[^>]*>|\d+)\s+(?:SUB|ENDSUB|CALL|IF|ELSE|ENDIF|WHILE|ENDWHILE|REPEAT|ENDREPEAT|DO|BREAK|CONTINUE|RETURN)\b/i.test(code) || /\bO\s*</i.test(code) || /\b(?:IF|WHILE|GOTO|ENDWHILE)\b/i.test(code)) {
         warn(sourceLine, 'UNSUPPORTED_MACRO', 'Macro or subroutine syntax is unsupported; interpretation stopped here');
         status = segments.length ? 'PARTIAL' : 'UNSUPPORTED'; stopped = true; break;
       }
@@ -208,21 +209,22 @@ export function parseGcode(text: string, options: ParserOptions = {}): ParseResu
     if (gWords.some((g, i) => gWords.indexOf(g) !== i) || mWords.length > 1) {
       warn(sourceLine, 'DUPLICATE_MODAL_WORD', 'Duplicate G or M word'); status = 'INVALID'; stopped = true; break;
     }
+    const linuxcnc = options.controllerProfile === 'linuxcnc';
     const knownLetters = new Set(['N', 'G', 'M', 'X', 'Y', 'Z', 'F', 'S', 'T', 'I', 'J', 'K', 'R']);
     const unsupportedLetter = tokens.find((t) => !knownLetters.has(t.letter));
-    if (unsupportedLetter || byLetter.has('M') && mWords.some((m) => ![2, 30].includes(m))) {
+    if (unsupportedLetter || byLetter.has('M') && mWords.some((m) => !(linuxcnc ? [2, 3, 4, 5, 30] : [2, 30]).includes(m))) {
       warn(sourceLine, 'UNSUPPORTED_BLOCK', 'Unsupported word or machine command; interpretation stopped here');
       status = segments.length ? 'PARTIAL' : 'UNSUPPORTED'; stopped = true; break;
     }
 
-    const supportedG = new Set([0, 1, 2, 3, 17, 18, 19, 20, 21, 90, 91]);
+    const supportedG = new Set([0, 1, 2, 3, 17, 18, 19, 20, 21, 90, 91, ...(linuxcnc ? [61, 61.1, 64] : [])]);
     const badG = gWords.find((g) => !supportedG.has(g));
     if (badG !== undefined) {
       warn(sourceLine, 'UNSUPPORTED_GCODE', `G${badG} is outside the supported profile; interpretation stopped here`);
       status = segments.length ? 'PARTIAL' : 'UNSUPPORTED'; stopped = true; break;
     }
     const conflicts = [
-      [0, 1, 2, 3], [90, 91], [20, 21], [17, 18, 19],
+      [0, 1, 2, 3], [90, 91], [20, 21], [17, 18, 19], [61, 61.1, 64],
     ].some((group) => group.filter((g) => gWords.includes(g)).length > 1);
     if (conflicts) {
       warn(sourceLine, 'CONFLICTING_MODAL', 'Conflicting modal groups in one block'); status = 'INVALID'; stopped = true; break;

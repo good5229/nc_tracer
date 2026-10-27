@@ -13,3 +13,8 @@ samples/
 *.ngc
 *.tap
 *.gcode
+
+# Only the three explicitly approved public LinuxCNC demos are tracked.
+!demo/useful-subroutines.ngc
+!demo/lathe_g70_71_demo.ngc
+!demo/lathe-g76.ngc
