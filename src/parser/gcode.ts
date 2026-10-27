@@ -1,5 +1,5 @@
 import { expandLinuxCncMacros, findLinuxCncSubroutine } from './linuxcncMacro';
-import { expandLinuxCncG76 } from './linuxcncThread';
+import { expandLinuxCncG76, type ThreadMoveKind } from './linuxcncThread';
 import { expandLinuxCncG70, expandLinuxCncG71 } from './linuxcncRoughing';
 import { resolveLinuxCncProfile } from './linuxcncProfile';
 import {linuxCncLatheNoseEntry, linuxCncLatheNoseLines, type LatheInputMove, type LatheNosePoint} from './linuxcncLatheNose';
@@ -31,6 +31,7 @@ export type MotionSegment = {
   feed?: number;
   spindle?: number;
   tool?: number;
+  thread?: {kind:ThreadMoveKind;synchronized:boolean;pitch:number;phaseOriginZ:number;phaseTurnsStart:number;phaseTurnsEnd:number;axialDirection:1|-1;spindleDirection:1|-1;external:boolean;indexOffsetDegrees:number};
   unit: ModalState['unit'];
   distanceMode: ModalState['distanceMode'];
   plane: ModalState['plane'];
@@ -194,6 +195,7 @@ function parseCore(text: string, options: ParserOptions, originalSource = text):
   let status: ValidationStatus = 'SUPPORTED';
   let stopped = false;
   let spindleRunning = false;
+  let spindleDirection:1|-1=1;
   let cutterCompActive = false;
   const latheTools=options.controllerProfile==='linuxcnc'?options.linuxcncLatheToolReference:undefined;
   const pointReference = options.controllerProfile === 'linuxcnc' && (options.linuxcncPointToolReference === true || latheTools!==undefined);
@@ -335,6 +337,8 @@ function parseCore(text: string, options: ParserOptions, originalSource = text):
     if (!latheTools && pointReference && gWords.includes(40)) cutterCompActive = false;
     if (!latheTools && pointReference && (gWords.includes(41) || gWords.includes(42))) cutterCompActive = true;
     if (mWords.includes(3) || mWords.includes(4)) spindleRunning = true;
+    if (mWords.includes(3)) spindleDirection=1;
+    if (mWords.includes(4)) spindleDirection=-1;
     if (mWords.includes(5)) spindleRunning = false;
     if (mWords.includes(6)) spindleRunning = false;
 
@@ -476,7 +480,7 @@ function parseCore(text: string, options: ParserOptions, originalSource = text):
         warn(sourceLine, 'FLOAT32_PRECISION_LOSS', 'G76 coordinates exceed the supported display precision'); Object.assign(state, blockStartState); status = 'INVALID'; stopped = true; break;
       }
       for (const [index, move] of result.moves.entries()) {
-        if (move.start.x !== move.end.x || move.start.y !== move.end.y || move.start.z !== move.end.z) segments.push({id:`line-${sourceLine}-segment-${index}`, sourceLine, ...(byLetter.has('N') ? {nBlock:String(byLetter.get('N')![0])} : {}), rawCode, motion:move.motion, start:toReference(move.start), end:toReference(move.end), unit:state.unit, distanceMode:state.distanceMode, plane:state.plane, status:'SUPPORTED', warningIds:[], ...(state.feed !== null ? {feed:state.feed} : {}), ...(state.spindle !== null ? {spindle:state.spindle} : {}), ...(motionTool() !== null ? {tool:motionTool()!} : {})});
+        if (move.start.x !== move.end.x || move.start.y !== move.end.y || move.start.z !== move.end.z) segments.push({id:`line-${sourceLine}-segment-${index}`, sourceLine, ...(byLetter.has('N') ? {nBlock:String(byLetter.get('N')![0])} : {}), rawCode, motion:move.motion, start:toReference(move.start), end:toReference(move.end), unit:state.unit, distanceMode:state.distanceMode, plane:state.plane, status:'SUPPORTED', warningIds:[], thread:{kind:move.kind,synchronized:move.spindleSynchronized,pitch:value('P')!*scale,phaseOriginZ:move.phaseOriginZ+localOffset.z,phaseTurnsStart:move.phaseTurnsStart,phaseTurnsEnd:move.phaseTurnsEnd,axialDirection:result.finalPosition.z>start.z*scale?1:-1,spindleDirection,external:value('I')!<0,indexOffsetDegrees:result.spindleIndexOffsetDegrees}, ...(state.feed !== null ? {feed:state.feed} : {}), ...(state.spindle !== null ? {spindle:state.spindle} : {}), ...(motionTool() !== null ? {tool:motionTool()!} : {})});
       }
       state.position = result.finalPosition;
       state.motionMode = null;

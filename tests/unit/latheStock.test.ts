@@ -48,3 +48,40 @@ it('sweeps the example insert body as well as the round nose',()=>{
  const wrongOrientation={...options,linuxcncLatheToolReference:{tools:{'1':{diameter:.4,orientation:3,offsetX:0,offsetZ:0}}}};
  expect(simulateLatheStock(parsed,wrongOrientation,'example-insert')).toMatchObject({ok:false,message:expect.stringContaining('방향 2')});
 });
+it('removes a helical groove with the example external threading tool',()=>{
+ const code='G21 G90 G18 G8\nT1 M6\nG0 X12 Z0\nS500 M3\nG0 X11\nG76 P1.2 Z-5.5 I-1 J.2 K1 R1\nG0 X12\nM2';
+ const parsed=parseGcode(code,options);expect(parsed.status).toBe('SUPPORTED');
+ const shape=simulateLatheStock(parsed,options);if(!shape.ok)throw new Error(shape.message);expect(shape.ok).toBe(true);
+ if(shape.ok){expect(shape.angularCells).toBe(48);expect(shape.removed).toBeGreaterThan(0);
+  const nr=50,na=48,z=10,r=49,ring=Array.from(shape.remaining.slice((z*nr+r)*na,(z*nr+r+1)*na));
+  expect(ring).toContain(0);expect(ring).toContain(1);
+  const before=Array.from(shape.remaining.slice((7*nr+r)*na,(7*nr+r+1)*na)),after=Array.from(shape.remaining.slice((8*nr+r)*na,(8*nr+r+1)*na));
+  for(let angle=0;angle<na;angle++)expect(after[(angle+8)%na]).toBe(before[angle]);
+ }
+});
+it('stops a threading rapid approach that enters uncut example stock',()=>{
+ const code='G21 G90 G18 G8\nT1 M6\nG0 X12 Z0\nG0 Z-3\nG0 X11\nS500 M3\nG76 P1.2 Z-5.5 I-1 J.2 K1 R1\nM2';
+ const parsed=parseGcode(code,options);expect(parsed.status).toBe('SUPPORTED');
+ expect(simulateLatheStock(parsed,options)).toMatchObject({ok:false,message:expect.stringContaining('급속 진입')});
+});
+it('uses pass phase and the radial exit taper for example threading',()=>{
+ const code='G21 G90 G18 G8\nT1 M6\nG0 X12 Z0\nS500 M3\nG0 X11\nG76 P1.2 Z-5.5 I-1 J.2 K1 R1 Q29.5 E1 L2\nG0 X12\nM2';
+ const parsed=parseGcode(code,options);expect(parsed.status).toBe('SUPPORTED');
+ const exits=parsed.segments.filter(s=>s.thread?.kind==='exit-taper');expect(exits.length).toBeGreaterThan(1);
+ expect(exits[0].thread!.phaseOriginZ).not.toBe(exits.at(-1)!.thread!.phaseOriginZ);
+ const shape=simulateLatheStock(parsed,options);if(!shape.ok)throw new Error(shape.message);expect(shape.angularCells).toBe(48);expect(shape.removed).toBeGreaterThan(0);
+});
+it('retains phase through synchronized entry and exit tapers',()=>{
+ const code='G21 G90 G18 G8\nT1 M6\nG0 X12 Z0\nS500 M3\nG0 X11\nG76 P1.2 Z-5.5 I-1 J.2 K1 R1 E1 L3\nG0 X12\nM2';
+ const parsed=parseGcode(code,options);expect(parsed.status).toBe('SUPPORTED');
+ const approach=parsed.segments.find(s=>s.thread?.kind==='approach'&&s.thread.synchronized),entry=parsed.segments.find(s=>s.thread?.kind==='entry-taper'),cut=parsed.segments.find(s=>s.thread?.kind==='thread-cut');
+ expect(approach?.thread?.phaseTurnsEnd).toBeGreaterThan(0);expect(entry?.thread?.phaseTurnsStart).toBe(approach?.thread?.phaseTurnsEnd);expect(cut?.thread?.phaseTurnsStart).toBe(entry?.thread?.phaseTurnsEnd);
+ const shape=simulateLatheStock(parsed,options);if(!shape.ok)throw new Error(shape.message);expect(shape.angularCells).toBe(48);expect(shape.removed).toBeGreaterThan(0);
+});
+it('mirrors the ideal thread phase when the spindle direction reverses',()=>{
+ const code='G21 G90 G18 G8\nT1 M6\nG0 X12 Z0\nS500 M3\nG0 X11\nG76 P1.2 Z-5.5 I-1 J.2 K1 R1\nG0 X12\nM2';
+ const forward=simulateLatheStock(parseGcode(code,options),options),reverse=simulateLatheStock(parseGcode(code.replace('M3','M4'),options),options);
+ if(!forward.ok)throw new Error(forward.message);if(!reverse.ok)throw new Error(reverse.message);
+ const nr=50,na=48,z=8,r=49,offset=(z*nr+r)*na;
+ for(let a=0;a<na;a++)expect(forward.remaining[offset+a]).toBe(reverse.remaining[offset+na-1-a]);
+});

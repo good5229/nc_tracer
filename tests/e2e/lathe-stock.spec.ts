@@ -48,3 +48,9 @@ test('switches between the round nose and the example insert section',async({pag
  await region.getByLabel('예제 공구 형상').selectOption('example-insert');await expect(region.getByRole('status')).toContainText('예상 형상');
  await expect(region.getByRole('status')).not.toHaveText(round!);await expect(region.getByLabel('선반 예제 소재 3D 표시')).toBeVisible();
 });
+test('renders an angular 3D stock for an example G76 thread',async({page})=>{
+ await page.goto('/');await page.getByLabel('컨트롤러 프로파일').selectOption('linuxcnc');await page.getByRole('button',{name:'선반 나사 예제 열기'}).click();
+ await expect(page.locator('.file-name')).toHaveText('선반 나사 예제');await expect(page.locator('.status')).toHaveText('SUPPORTED');
+ const region=page.getByRole('region',{name:'선반 예제 소재 형상'});await region.getByRole('button',{name:'선반 소재 형상 계산'}).click();
+ await expect(region.getByRole('status')).toContainText('제거된 3D 격자');await expect(region.getByLabel('선반 예제 소재 3D 표시')).toBeVisible();
+});

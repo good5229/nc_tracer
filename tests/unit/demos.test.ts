@@ -46,6 +46,8 @@ it('expands an explicitly configured LinuxCNC G76 block with unique source mappi
   const threading=result.segments.filter(s=>s.sourceLine===3);
   expect(threading.length).toBeGreaterThan(100);
   expect(threading.every(s=>s.rawCode.startsWith('G76'))).toBe(true);
+  expect(threading.some(s=>s.thread?.kind==='thread-cut' && s.thread.synchronized && s.thread.pitch===1.27 && s.thread.external)).toBe(true);
+  expect(threading.some(s=>s.thread?.kind==='exit-taper' && s.thread.synchronized)).toBe(true);
   expect(new Set(threading.map(s=>s.id)).size).toBe(threading.length);
   expect(result.segments.at(-1)?.end.x).toBeCloseTo(12.7);
   expect(parseGcode(source.replace('G8 ',''),{controllerProfile:'linuxcnc',initialPosition:{x:0,y:0,z:0}}).warnings.at(-1)?.code).toBe('INVALID_THREAD_SETUP');

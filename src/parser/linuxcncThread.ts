@@ -18,6 +18,11 @@ export type ThreadMove = {
   end: ThreadPosition;
   /** True for feed moves issued while LinuxCNC spindle synchronization is active. */
   spindleSynchronized: boolean;
+  /** Axial coordinate at the spindle index for this pass, in millimeters. */
+  phaseOriginZ: number;
+  /** Ideal spindle revolutions since the index for this pass. */
+  phaseTurnsStart: number;
+  phaseTurnsEnd: number;
   /** The source G76 block is retained on every generated move. */
   sourceLine: number;
   sourceBlockId?: string;
@@ -123,19 +128,25 @@ export function expandLinuxCncG76(input: LinuxCncG76Input): LinuxCncG76Result {
   for (let n = 0; n < optional.H + 1; n += 1) passDepths.push(endDepth);
   const moves: ThreadMove[] = [];
   let current = start;
+  let phaseOriginZ=start.z,phaseTurns=0;
   const append = (motion: ThreadMove['motion'], kind: ThreadMoveKind, end: ThreadPosition, spindleSynchronized = false) => {
     if (moves.length >= G76_MAX_MOVES) return false;
     const moveEnd = { x: end.x, y: end.y, z: end.z };
     if (![moveEnd.x, moveEnd.y, moveEnd.z].every(Number.isFinite) || [moveEnd.x, moveEnd.y, moveEnd.z].some((n) => Math.abs(n) > MAX_ABS_MM)) return false;
-    moves.push({ motion, kind, start: current, end: moveEnd, spindleSynchronized, sourceLine: input.sourceLine, sourceBlockId: input.sourceBlockId, rawCode: input.rawCode });
+    const phaseTurnsStart=phaseTurns;
+    if(spindleSynchronized){const syncPitch=kind==='thread-cut'?pitch:taperPitch;phaseTurns+=Math.hypot(moveEnd.x-current.x,moveEnd.z-current.z)/syncPitch;}
+    if(!Number.isFinite(phaseTurns))return false;
+    moves.push({ motion, kind, start: current, end: moveEnd, spindleSynchronized, phaseOriginZ,phaseTurnsStart,phaseTurnsEnd:phaseTurns, sourceLine: input.sourceLine, sourceBlockId: input.sourceBlockId, rawCode: input.rawCode });
     current = moveEnd;
     return true;
   };
   const xAtDepth = (depthValue: number) => start.x + (boring ? 1 : -1) * depthValue;
   for (const cutDepth of passDepths) {
+    phaseTurns=0;
     const zoff = (cutDepth - fullDiaDepth) * Math.tan(q);
     const backX = start.x + (boring ? 1 : -1) * (cutDepth - endDepth);
     const backZ = start.z - zoff;
+    phaseOriginZ=backZ;
     const cutX = xAtDepth(cutDepth);
     const at = (x: number, z: number): ThreadPosition => ({ x, y: start.y, z });
     if (!append('G00', 'clearance', at(backX, backZ))) return fail('MOVE_LIMIT', 'G76 expanded path exceeded its move or coordinate limit.');
