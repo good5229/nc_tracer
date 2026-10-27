@@ -137,3 +137,16 @@ it('retains a real gouging failure even when the program ends with M2',()=>{
  const result=parseGcode(source,{...settings,linuxcncLatheToolReference:{tools},linuxcncPawnContourReference:true,initialPosition:{x:20,y:0,z:5}});
  expect(result.status).toBe('PARTIAL');expect(result.warnings.at(-1)?.code).toBe('CONCAVE_GOUGING');
 });
+it('matches LinuxCNC when a compensated move precedes multipass G70',()=>{
+ const source=readFileSync(new URL('../fixtures/g70_comp_pre_move.ngc',import.meta.url),'utf8');
+ const table={...settings,linuxcncLatheToolReference:{tools:{'1':{diameter:.4,orientation:2,offsetX:0,offsetZ:0}}}};
+ const result=parseGcode(source,table);
+ expect(result.status).toBe('SUPPORTED');expect(result.warnings).toEqual([]);
+ const canonical=[['G00',10,3],['G00',10,1],['G01',9.8166,.8],['G00',4,.6306],['G01',4,-5],['G00',10,1],['G01',9.247,.9843],['G00',4,.1394],['G01',4,-5],['G01',7.8,-5],['G00',12,-5]] as const;
+ expect(result.segments).toHaveLength(canonical.length);result.segments.forEach((s,i)=>{expect(s.motion,`motion ${i}`).toBe(canonical[i][0]);expect(s.end.x,`X ${i}`).toBeCloseTo(canonical[i][1],4);expect(s.end.z,`Z ${i}`).toBeCloseTo(canonical[i][2],4);if(i)expect(s.start).toEqual(result.segments[i-1].end);});
+});
+it('stops conservatively when a prior compensated move ends at the G70 anchor',()=>{
+ const source=readFileSync(new URL('../fixtures/g70_comp_pre_at_anchor.ngc',import.meta.url),'utf8');
+ const table={...settings,linuxcncLatheToolReference:{tools:{'1':{diameter:.4,orientation:2,offsetX:0,offsetZ:0}}}};
+ const result=parseGcode(source,table);expect(result.status).toBe('PARTIAL');expect(result.warnings.at(-1)?.code).toBe('UNSUPPORTED_COMP_G70_QUEUE');
+});

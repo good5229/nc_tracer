@@ -433,18 +433,22 @@ function parseCore(text: string, options: ParserOptions, originalSource = text):
       if(latheComp){
         // LinuxCNC temporarily disables compensation at each pass anchor,
         // while the previous compensated move remains queued for lookahead.
-        if(!finish || latheComp.moves.length){warn(sourceLine,'UNSUPPORTED_COMP_G70','보정 중 G70은 보정 진입 직후에만 지원합니다.');Object.assign(state,blockStartState);status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;}
+        if(!finish){warn(sourceLine,'UNSUPPORTED_COMP_G70','보정 중 이 사이클은 지원하지 않습니다.');Object.assign(state,blockStartState);status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;}
+        const hasPriorCompMove=latheComp.moves.length>0;
         const anchorMoved=state.position.x!==target.x||state.position.z!==target.z;
         const cycleMoves=anchorMoved?result.moves.slice(1):result.moves;
         if(anchorMoved && (!result.moves.length || result.moves[0].motion!=='G00' || result.moves[0].end.x!==target.x || result.moves[0].end.z!==target.z)){warn(sourceLine,'INVALID_COMP_G70_ANCHOR','G70 시작 위치를 확인할 수 없습니다.');status='INVALID';stopped=true;break;}
         if(!cycleMoves.length || cycleMoves[0].center || cycleMoves[0].motion!=='G00'){warn(sourceLine,'UNSUPPORTED_COMP_G70','G70의 직선 진입 경로를 확인할 수 없습니다.');status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;}
-        const entry=linuxCncLatheNoseEntry(target,cycleMoves[0].end,latheComp.diameter,latheComp.side,latheComp.orientation);
-        if(!entry.ok){warn(sourceLine,entry.code,'G70 공구 보정 진입 이동을 확인해 주세요.');status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;}
+        if(!hasPriorCompMove){const entry=linuxCncLatheNoseEntry(target,cycleMoves[0].end,latheComp.diameter,latheComp.side,latheComp.orientation);
+         if(!entry.ok){warn(sourceLine,entry.code,'G70 공구 보정 진입 이동을 확인해 주세요.');status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;}}
         const passes=byLetter.get('P')?.[0]??1;
         const bypassCount=cycleMoves.filter((move,index)=>index>0 && move.motion==='G00' && move.end.x===target.x && move.end.z===target.z).length;
         if(bypassCount!==passes-1){warn(sourceLine,'UNSUPPORTED_COMP_G70','G70 패스 간 시작점 이동을 확인할 수 없습니다.');status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;}
-        if(anchorMoved){const start=toReference(state.position),end=toReference({...state.position,x:target.x,z:target.z});if(!renderablePosition(start)||!renderablePosition(end)){warn(sourceLine,'FLOAT32_PRECISION_LOSS','G70 시작 위치가 표시 정밀도 범위를 벗어났습니다.');status='INVALID';stopped=true;break;}segments.push({id:`line-${sourceLine}-cycle-anchor`,sourceLine,rawCode,motion:'G00',start,end,unit:state.unit,distanceMode:state.distanceMode,plane:'XZ',status:'SUPPORTED',warningIds:[],...(loadedTool!==null?{tool:loadedTool}:{})});}
-        latheComp.start={...target};
+        if(hasPriorCompMove)latheComp.moves.push({motion:'G00_BYPASS',end:target,sourceLine});
+        else {
+         if(anchorMoved){const start=toReference(state.position),end=toReference({...state.position,x:target.x,z:target.z});if(!renderablePosition(start)||!renderablePosition(end)){warn(sourceLine,'FLOAT32_PRECISION_LOSS','G70 시작 위치가 표시 정밀도 범위를 벗어났습니다.');status='INVALID';stopped=true;break;}segments.push({id:`line-${sourceLine}-cycle-anchor`,sourceLine,rawCode,motion:'G00',start,end,unit:state.unit,distanceMode:state.distanceMode,plane:'XZ',status:'SUPPORTED',warningIds:[],...(loadedTool!==null?{tool:loadedTool}:{})});}
+         latheComp.start={...target};
+        }
         for(const [index,move] of cycleMoves.entries())latheComp.moves.push(index>0 && move.motion==='G00' && move.end.x===target.x && move.end.z===target.z?{motion:'G00_BYPASS',end:move.end,sourceLine}:move.center?{motion:move.motion as 'G02'|'G03',end:move.end,center:move.center,sourceLine}:{motion:move.motion as 'G00'|'G01',end:move.end,sourceLine});
         latheComp.metadata.set(sourceLine,{rawCode,feed:state.feed,spindle:state.spindle,tool:loadedTool,distanceMode:state.distanceMode});
         const checked=linuxCncLatheNoseLines(latheComp.start,latheComp.moves,latheComp.diameter,latheComp.side,latheComp.orientation,options.linuxcncPawnContourReference===true);
