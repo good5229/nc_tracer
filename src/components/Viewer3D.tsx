@@ -231,6 +231,7 @@ export default function Viewer3D({
       if (item.source.motion === 'G00') rapidProgress += item.points.length - 1;
       else linearProgress += item.points.length - 1;
     });
+    progressCounts.current.set('__end__', { rapid: rapidProgress, linear: linearProgress });
     if (!engine) return;
 
     const setGeometry = (line: THREE.LineSegments, items: RenderedSegment[], sources: ViewerSegment[]) => {

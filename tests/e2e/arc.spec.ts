@@ -66,3 +66,19 @@ test('full-circle arc stays one playback block and canvas selection maps to its 
   await expect(counter).toHaveText('1 / 2');
   await expect(page.getByRole('button', { name: 'G02 X10 Y0 I-10 J0' })).toHaveClass(/selected/);
 });
+
+test('filtered current motion keeps earlier visible progress', async ({page}) => {
+ await page.goto('/nc_tracer/');
+ await page.locator('.topbar input[type=file]').setInputFiles({name:'progress.nc',mimeType:'text/plain',buffer:Buffer.from('G21 G90 G00 X0 Y0 Z0\nG01 X30\nG00 Y20\nG01 X0\nM30')});
+ await expect(page.locator('.counter')).toHaveText('1 / 3');
+ await page.getByRole('button',{name:'다음 블록'}).click();
+ await expect(page.locator('.counter')).toHaveText('2 / 3');
+ await page.getByRole('region',{name:'경로 필터 및 통계'}).getByLabel('G00').uncheck();
+ await expect(page.locator('.counter')).toHaveText('2 / 3');
+ const canvas=page.locator('.viewport canvas');
+ const afterFilter=await canvas.screenshot();
+ await page.getByRole('button',{name:'이전 블록'}).click();
+ await expect(page.locator('.counter')).toHaveText('1 / 3');
+ const beforeProgress=await canvas.screenshot();
+ expect(afterFilter.equals(beforeProgress)).toBe(false);
+});
