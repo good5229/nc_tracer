@@ -3,6 +3,7 @@ import {readFileSync} from 'node:fs';
 import {parseGcode} from '../../src/parser/gcode';
 import reference from '../fixtures/linuxcnc-lathe-comp-reference.json';
 import priorDirections from '../fixtures/linuxcnc-g70-prior-directions.json';
+import twoMoves from '../fixtures/linuxcnc-g70-two-moves.json';
 const settings={controllerProfile:'linuxcnc' as const,linuxcncLatheToolReference:{tools:{}},initialPosition:{x:0,y:0,z:0},initialDistanceMode:'absolute' as const};
 describe('LinuxCNC explicit lathe compensation profile',()=>{
  for(const name of ['lathe_comp_left','lathe_comp_right','lathe_comp_arc'] as const)it(`matches ${name}`,()=>{
@@ -164,4 +165,11 @@ it.each(['right_x11','right_z0','left_x9','left_z0'] as const)('matches the Linu
  const table={...settings,linuxcncLatheToolReference:{tools:{'1':{diameter:.4,orientation:2,offsetX:0,offsetZ:0}}}};
  const result=parseGcode(source,table);expect(result.status).toBe('PARTIAL');expect(result.warnings.at(-1)?.code).toBe('CONCAVE_GOUGING');
  expect(result.segments.map(s=>[s.motion,s.end.x,s.end.z])).toEqual([['G00',10,3],['G00',10,1]]);
+});
+
+it.each(['left_x11','left_x9','left_z0','left_z15','right_x11','right_x9','right_z0','right_z15'] as const)('matches LinuxCNC after two compensated moves for %s',name=>{
+ const source=readFileSync(new URL(`../fixtures/g70_comp_two_${name}.ngc`,import.meta.url),'utf8');
+ const table={...settings,linuxcncLatheToolReference:{tools:{'1':{diameter:.4,orientation:2,offsetX:0,offsetZ:0}}}};
+ const result=parseGcode(source,table),expected=twoMoves[name];expect(result.status).toBe(expected.status);if(expected.status==='PARTIAL')expect(result.warnings.at(-1)?.code).toBe('CONCAVE_GOUGING');
+ expect(result.segments).toHaveLength(expected.moves.length);result.segments.forEach((segment,i)=>{expect(segment.motion,`${name} move ${i}`).toBe(expected.moves[i].motion);expect(segment.end.x,`${name} X ${i}`).toBeCloseTo(expected.moves[i].end[0],4);expect(segment.end.z,`${name} Z ${i}`).toBeCloseTo(expected.moves[i].end[1],4);if(i)expect(segment.start).toEqual(result.segments[i-1].end);});
 });
