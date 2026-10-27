@@ -100,3 +100,11 @@ it('can show only the confirmed prefix of the original G76 demo without calling 
  if(!shape.ok)throw new Error(shape.message);expect(shape.partial).toBe(true);expect(shape.removed).toBeGreaterThan(0);
  expect(simulateLatheStock(parsed,setup,'round-nose',LATHE_STOCK_PRESETS['thread-demo'])).toMatchObject({ok:false});
 });
+it('shows the original pawn demo up to the verified G70 gouging error',()=>{
+ const source=readFileSync(new URL('../../demo/lathe_g70_71_demo.ngc',import.meta.url),'utf8');
+ const tools=Object.fromEntries([2,10].map(n=>[String(n),{diameter:.4,orientation:2,offsetX:0,offsetZ:0}]));
+ const setup={...options,linuxcncLatheToolReference:{tools},linuxcncPawnContourReference:true,initialPosition:{x:20,y:0,z:5}};
+ const parsed=parseGcode(source,setup);expect(parsed.status).toBe('PARTIAL');expect(parsed.warnings.at(-1)?.code).toBe('CONCAVE_GOUGING');
+ const shape=simulateLatheStock(parsed,setup,'example-insert',LATHE_STOCK_PRESETS['pawn-demo'],true);
+ if(!shape.ok)throw new Error(`${shape.message} (row ${shape.sourceLine})`);expect(shape.partial).toBe(true);expect(shape.removed).toBeGreaterThan(0);expect(shape.stopLine).toBe(30);expect(shape.stopMessage).toContain('급속 이동');
+});

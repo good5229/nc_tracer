@@ -3,6 +3,7 @@ import { parseGcode } from '../../src/parser/gcode';
 import useful from '../../demo/useful-subroutines.ngc?raw';
 import g76 from '../../demo/lathe-g76.ngc?raw';
 import g70 from '../../demo/lathe_g70_71_demo.ngc?raw';
+import pawnFinish from '../fixtures/linuxcnc-pawn-g70-prefix-reference.json';
 const setup={controllerProfile:'linuxcnc' as const,linuxcncPointToolReference:true,initialPosition:{x:0,y:0,z:0},initialDistanceMode:'absolute' as const};
 it('runs useful-subroutines and G76 with the explicit point-tool reference',()=>{
  const milling=parseGcode(useful,setup),lathe=parseGcode(g76,setup);
@@ -18,6 +19,15 @@ it('keeps coordinates continuous through G92 and G92.1',()=>{
  const result=parseGcode('G21 G90 G0 X0 Y0 Z10\nG92 Z0\nG1 Z5\nG92.1\nG1 Z20\nM2',setup);
  expect(result.segments.map(s=>s.end.z)).toEqual([10,15,20]);
  expect(result.segments[2].start.z).toBe(15);
+});
+it('reaches the original pawn finishing cycle using the explicit LinuxCNC contour reference',()=>{
+ const tools=Object.fromEntries([1,2,4,9,10].map(n=>[String(n),{diameter:.4,orientation:2,offsetX:0,offsetZ:0}]));
+ const result=parseGcode(g70,{controllerProfile:'linuxcnc',linuxcncLatheToolReference:{tools},linuxcncPawnContourReference:true,initialPosition:{x:0,y:0,z:0},initialDistanceMode:'absolute'});
+ expect(result.segments.some(s=>s.rawCode.includes('G71.1'))).toBe(true);expect(result.segments.some(s=>s.rawCode.includes('G71.2'))).toBe(true);
+ expect(result.status).toBe('PARTIAL');expect(result.warnings.at(-1)?.code).toBe('CONCAVE_GOUGING');
+ const prefix=result.segments.filter(s=>s.rawCode.includes('G70 Q100'));expect(prefix).toHaveLength(pawnFinish.moves.length);
+ prefix.forEach((move,i)=>{const expected=pawnFinish.moves[i];expect(move.motion,`G70 motion ${i}`).toBe(expected.motion);expect(Math.abs(move.end.x!-expected.end[0]),`G70 X ${i}`).toBeLessThan(.00006);expect(Math.abs(move.end.z!-expected.end[1]),`G70 Z ${i}`).toBeLessThan(.00006);});
+ expect(parseGcode(g70+'\n ',{...setup,linuxcncPawnContourReference:true}).warnings.at(-1)?.code).toBe('INVALID_PAWN_REFERENCE');
 });
 
 it('renders a radius-defined semicircle with its unique midpoint center',()=>{

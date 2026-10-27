@@ -7,9 +7,9 @@ export type LatheStockGrid={radius:number;zMin:number;zMax:number;step:number;ra
 export const LATHE_STOCK_PRESETS:Record<'standard'|'thread-demo'|'pawn-demo',LatheStockGrid>={
  standard:LATHE_STOCK,
  'thread-demo':{radius:3.175,zMin:-16.5,zMax:0,step:.1,radialCells:32,axialCells:165,angularSegments:48},
- 'pawn-demo':{radius:15,zMin:-40,zMax:4,step:.2,radialCells:75,axialCells:220,angularSegments:48},
+ 'pawn-demo':{radius:15,zMin:-40,zMax:3,step:.2,radialCells:75,axialCells:215,angularSegments:48},
 };
-export type LatheStockResult={ok:true;remaining:Uint8Array;removed:number;angularCells?:number;grid:LatheStockGrid;partial?:boolean}|{ok:false;message:string;sourceLine?:number};
+export type LatheStockResult={ok:true;remaining:Uint8Array;removed:number;angularCells?:number;grid:LatheStockGrid;partial?:boolean;stopLine?:number;stopMessage?:string}|{ok:false;message:string;sourceLine?:number};
 export type LatheInsertModel='round-nose'|'example-insert';
 type Point={x:number;z:number};
 const finite=(p:MotionSegment['start'])=>typeof p.x==='number'&&Number.isFinite(p.x)&&typeof p.y==='number'&&Number.isFinite(p.y)&&typeof p.z==='number'&&Number.isFinite(p.z);
@@ -39,7 +39,7 @@ function insideConvex(point:Point,polygon:Point[]):boolean{
 export function simulateLatheStock(result:ParseResult,options:ParserOptions,model:LatheInsertModel='round-nose',grid:LatheStockGrid=LATHE_STOCK,allowPartial=false):LatheStockResult{
  const table=options.linuxcncLatheToolReference?.tools;
  if(!table)return {ok:false,message:'선반 예제 공구표를 선택해 NC를 다시 해석해 주세요.'};
- const partial=allowPartial&&result.status==='PARTIAL'&&result.warnings.length===1&&result.warnings[0].code==='ENTRY_TOO_SHORT';
+ const partial=allowPartial&&result.status==='PARTIAL'&&result.warnings.length===1&&(result.warnings[0].code==='ENTRY_TOO_SHORT'||(options.linuxcncPawnContourReference===true&&result.warnings[0].code==='CONCAVE_GOUGING'));
  if((result.status!=='SUPPORTED'||result.warnings.length)&&!partial)return {ok:false,message:'NC 전체 경로를 확인하지 못해 완성 형상 계산을 중단했습니다.'};
  if(!result.segments.length)return {ok:false,message:'계산할 선반 이동 경로가 없습니다.'};
  if(result.segments.some(s=>/\bG\s*0*76(?:\D|$)/i.test(s.rawCode)&&!s.thread))return {ok:false,message:'나사 가공의 동기화 정보를 확인할 수 없습니다.'};
@@ -47,6 +47,7 @@ export function simulateLatheStock(result:ParseResult,options:ParserOptions,mode
  if(![grid.radius,grid.zMin,grid.zMax,step,nr,nz,angularSegments].every(Number.isFinite)||!(grid.radius>0)||!(step>0)||!(grid.zMax>grid.zMin)||![nr,nz,angularSegments].every(Number.isInteger)||nr<1||nz<1||angularSegments<3||nr*nz*angularSegments>1_000_000||Math.abs(nr-Math.ceil(grid.radius/step))>0||Math.abs(nz*step-(grid.zMax-grid.zMin))>1e-8)return {ok:false,message:'예제 소재 격자 설정이 유효하지 않습니다.'};
  const angular=result.segments.some(s=>s.thread)?angularSegments:1,remaining=new Uint8Array(nr*nz*angular).fill(1);let removed=0,edges=0;
  const index=(r:number,z:number,a:number)=>(z*nr+r)*angular+a;
+ const collision=(message:string,sourceLine:number):LatheStockResult=>partial?{ok:true,remaining,removed,grid,partial:true,stopLine:sourceLine,stopMessage:message,...(angular>1?{angularCells:angular}:{})}:{ok:false,message,sourceLine};
  for(let r=0;r<nr;r++)if((r+.5)*step>grid.radius)for(let z=0;z<nz;z++)for(let a=0;a<angular;a++)remaining[index(r,z,a)]=0;
  for(const segment of result.segments){
   if(!finite(segment.start)||!finite(segment.end)||segment.start.y!==0||segment.end.y!==0||segment.plane!=='XZ')return {ok:false,message:'X/Z 평면의 완전히 알려진 경로만 계산합니다.',sourceLine:segment.sourceLine};
@@ -78,7 +79,7 @@ export function simulateLatheStock(result:ParseResult,options:ParserOptions,mode
     const fraction=((-t.spindleDirection*t.phaseTurnsStart)%1+1)%1;
     const angle=Math.min(angular-1,Math.floor(fraction*angular));
     const polygon=sweptPolygon(a,b,[{x:0,z:0},{x:2,z:-2*tan30},{x:2,z:2*tan30}]);
-    for(let z=0;z<nz;z++)for(let r=0;r<nr;r++){const cell=index(r,z,angle);if(remaining[cell]&&insideConvex({x:(r+.5)*step,z:zMin+(z+.5)*step},polygon))return {ok:false,message:`나사 공구의 급속 ${t.kind==='approach'?'진입':t.kind==='retract'?'이탈':'위치'} 이동이 예제 소재에 접촉해 계산을 중단했습니다.`,sourceLine:segment.sourceLine};}
+    for(let z=0;z<nz;z++)for(let r=0;r<nr;r++){const cell=index(r,z,angle);if(remaining[cell]&&insideConvex({x:(r+.5)*step,z:zMin+(z+.5)*step},polygon))return collision(`나사 공구의 급속 ${t.kind==='approach'?'진입':t.kind==='retract'?'이탈':'위치'} 이동이 예제 소재에 접촉해 계산을 중단했습니다.`,segment.sourceLine);}
    }
    continue;
   }
@@ -90,10 +91,10 @@ export function simulateLatheStock(result:ParseResult,options:ParserOptions,mode
    for(let z=0;z<nz;z++)for(let r=0;r<nr;r++){
    const x=(r+.5)*step,pointZ=zMin+(z+.5)*step;
    if(Math.min(distanceSquared({x,z:pointZ},points[i-1],points[i]),distanceSquared({x:-x,z:pointZ},points[i-1],points[i]))<=radius*radius || (polygon.length>0 && (insideConvex({x,z:pointZ},polygon)||insideConvex({x:-x,z:pointZ},polygon)))){
-    for(let angle=0;angle<angular;angle++){const cell=index(r,z,angle);if(!remaining[cell])continue;if(segment.motion==='G00')return {ok:false,message:'급속 이동 중 예제 공구와 소재가 접촉해 계산을 중단했습니다.',sourceLine:segment.sourceLine};remaining[cell]=0;removed++;}
+    for(let angle=0;angle<angular;angle++){const cell=index(r,z,angle);if(!remaining[cell])continue;if(segment.motion==='G00')return collision('급속 이동 중 예제 공구와 소재가 접촉해 계산을 중단했습니다.',segment.sourceLine);remaining[cell]=0;removed++;}
    }
    }
   }
  }
- return {ok:true,remaining,removed,grid,...(partial?{partial:true}:{}),...(angular>1?{angularCells:angular}:{})};
+ return {ok:true,remaining,removed,grid,...(partial?{partial:true,stopLine:result.warnings[0].sourceLine,stopMessage:result.warnings[0].message}:{}),...(angular>1?{angularCells:angular}:{})};
 }

@@ -43,7 +43,7 @@ const times=(a:LatheNosePoint,k:number):LatheNosePoint=>({x:a.x*k,z:a.z*k});
  * Some arc/arc corners and tool-length offsets are not supported.
  * The parser handles G40 transitions and control flow separately.
  */
-export function linuxCncLatheNoseLines(start:LatheNosePoint,lines:LatheInputMove[],diameter:number,side:'left'|'right',orientation:number):LatheCompLines {
+export function linuxCncLatheNoseLines(start:LatheNosePoint,lines:LatheInputMove[],diameter:number,side:'left'|'right',orientation:number,allowReferenceSpiral=false):LatheCompLines {
  const error=(code:string,sourceLine:number):LatheCompLines=>({ok:false,code,sourceLine});
  if(!lines.length||lines.length>10000)return error('INVALID_LINE_COUNT',lines[0]?.sourceLine??0);
  if(lines.some(l=>!Number.isInteger(l.sourceLine)||l.sourceLine<1||!['G00','G01','G02','G03','G00_BYPASS'].includes(l.motion)||![l.end.x,l.end.z].every(Number.isFinite)||('center' in l&&![l.center.x,l.center.z].every(Number.isFinite))))return error('INVALID_LINE',lines.find(l=>!Number.isInteger(l.sourceLine)||l.sourceLine<1)?.sourceLine??lines[0].sourceLine);
@@ -82,7 +82,7 @@ export function linuxCncLatheNoseLines(start:LatheNosePoint,lines:LatheInputMove
   let b:LatheNosePoint,arcEndTangent:LatheNosePoint|undefined,arcCenter:LatheNosePoint|undefined;
   if('center' in line){
    arcCenter=line.center;const atStart=sub(programPoint,line.center),atEnd=sub(line.end,line.center),r0=Math.hypot(atStart.x,atStart.z),r1=Math.hypot(atEnd.x,atEnd.z);
-   if(!(r0>0)||!Number.isFinite(r0)||!Number.isFinite(r1)||Math.abs(r0-r1)>1e-9*Math.max(1,r0))return error('INVALID_COMPENSATED_ARC',line.sourceLine);
+   if(!(r0>0)||!Number.isFinite(r0)||!Number.isFinite(r1)||Math.abs(r0-r1)>(allowReferenceSpiral ? .001 : 1e-9*Math.max(1,r0)))return error('INVALID_COMPENSATED_ARC',line.sourceLine);
    const inside=(side==='left' && line.motion==='G03') || (side==='right' && line.motion==='G02');
    if(inside && radius>=r0)return error('COMPENSATION_RADIUS_TOO_LARGE',line.sourceLine);
    const rotate=(v:LatheNosePoint):LatheNosePoint=>line.motion==='G02'?{z:v.x,x:-v.z}:{z:-v.x,x:v.z};
@@ -100,8 +100,8 @@ export function linuxCncLatheNoseLines(start:LatheNosePoint,lines:LatheInputMove
   if(turn===0 && dot<0)return error('REVERSING_CORNER',line.sourceLine);
   const cornerAngle=Math.atan2(Math.abs(turn),dot);
   const tangentArc=isArc||previousArc;
-  const tangent=tangentArc && Math.abs(turn)<=1e-12 && dot>0;
-  if(tangent && Math.hypot(nextStart.x-center.x,nextStart.z-center.z)>1e-9)return error('UNRESOLVED_ARC_JUNCTION',line.sourceLine);
+  const tangent=(tangentArc && Math.abs(turn)<=1e-12 && dot>0)||(allowReferenceSpiral && dot>0 && cornerAngle<=.05);
+  if(tangent && tangentArc && !allowReferenceSpiral && Math.hypot(nextStart.x-center.x,nextStart.z-center.z)>1e-9)return error('UNRESOLVED_ARC_JUNCTION',line.sourceLine);
   if(tangentArc && !tangent && dot<0 && Math.abs(turn)<=1e-12)return error('UNSUPPORTED_ARC_CORNER',line.sourceLine);
   if(tangentArc && !tangent && (previousArc && isArc && turn*sign<=0 || line.motion==='G00'))return error('UNSUPPORTED_ARC_CORNER',line.sourceLine);
   if(!tangent && turn!==0 && (cornerAngle<=0.01 || Math.PI-cornerAngle<=0.01))return error('UNSUPPORTED_CORNER_TOLERANCE',line.sourceLine);
@@ -146,7 +146,7 @@ export function linuxCncLatheNoseLines(start:LatheNosePoint,lines:LatheInputMove
    }else return error('UNSUPPORTED_ARC_CORNER',line.sourceLine);
    if(![mid.x,mid.z].every(Number.isFinite))return error('INVALID_COORDINATE',line.sourceLine);
    previous.end=toolPoint(mid);center=mid;
-  }else if(!tangentArc && turn!==0 && turn*sign>0){
+  }else if(!tangent && !tangentArc && turn!==0 && turn*sign>0){
    const delta=sub(nextStart,center),t=cross(delta,v)/turn,s=cross(delta,u)/turn;
    if(!Number.isFinite(t)||!Number.isFinite(s)||t>0||s<0||-t>al||s>bl)return error('CONCAVE_GOUGING',line.sourceLine);
    const intersection=plus(center,times(u,t)),tip=toolPoint(intersection);
@@ -158,7 +158,7 @@ export function linuxCncLatheNoseLines(start:LatheNosePoint,lines:LatheInputMove
   }
   if(arcCenter){
    const startRadius=Math.hypot(center.x-arcCenter.x,center.z-arcCenter.z),endRadius=Math.hypot(nextEnd.x-arcCenter.x,nextEnd.z-arcCenter.z);
-   if(!(startRadius>0)||Math.abs(startRadius-endRadius)>1e-9*Math.max(1,startRadius))return error('UNRESOLVED_COMPENSATED_ARC',line.sourceLine);
+   if(!(startRadius>0)||Math.abs(startRadius-endRadius)>(allowReferenceSpiral ? .001 : 1e-9*Math.max(1,startRadius)))return error('UNRESOLVED_COMPENSATED_ARC',line.sourceLine);
    moves.push({start:toolPoint(center),end:toolPoint(nextEnd),motion:line.motion,sourceLine:line.sourceLine,center:toolPoint(arcCenter)});
   }else moves.push({start:toolPoint(center),end:toolPoint(nextEnd),motion:line.motion,sourceLine:line.sourceLine});
   center=nextEnd;programStart=programPoint;programPoint={...line.end};previousArc=isArc;previousTangent=arcEndTangent;

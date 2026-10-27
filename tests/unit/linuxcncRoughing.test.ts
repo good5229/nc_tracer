@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readFileSync,writeFileSync } from 'node:fs';
 import { findLinuxCncSubroutine } from '../../src/parser/linuxcncMacro';
 import { resolveLinuxCncProfile } from '../../src/parser/linuxcncProfile';
-import { expandLinuxCncG71, type RoughCycleInput } from '../../src/parser/linuxcncRoughing';
+import { expandLinuxCncG70,expandLinuxCncG71, type RoughCycleInput } from '../../src/parser/linuxcncRoughing';
+import pawnReference from '../fixtures/linuxcnc-pawn-g71_1-reference.json';
+import pawnPocketReference from '../fixtures/linuxcnc-pawn-g71_2-reference.json';
 
 const line = (sourceLine: number, x: number, z: number, rawCode = `G1 X${x} Z${z}`): RoughCycleInput['profile'][number] => ({ motion: 'G01', end: { x, z }, sourceLine, rawCode });
 const base: RoughCycleInput = {
@@ -12,6 +14,30 @@ const base: RoughCycleInput = {
 };
 
 describe('expandLinuxCncG71', () => {
+  it('replays the original G71.1 contour under the LinuxCNC reference behavior',()=>{
+    const source=readFileSync(new URL('../../demo/lathe_g70_71_demo.ngc',import.meta.url),'utf8'),routine=findLinuxCncSubroutine(source,100)!;
+    const resolved=resolveLinuxCncProfile(routine,{x:15,z:3.041});expect(resolved.ok).toBe(true);if(!resolved.ok)return;
+    const result=expandLinuxCncG71({cycle:'G71.1',position:{x:15,z:3.041},X:15,Z:3.041,profile:resolved.profile,units:'mm',D:1,I:1,R:.3,sourceLine:28,rawCode:'G71.1 Q100 X15 Z3.041 D1 I1 R0.3',controllerEmulation:true});
+    if(!result.ok)throw new Error(result.error.message);
+    const meaningful=result.moves.filter(move=>move.center||Math.hypot(move.end.x-move.start.x,move.end.z-move.start.z)>1e-12);
+    expect(meaningful).toHaveLength(pawnReference.moves.length);
+    meaningful.forEach((move,i)=>{const expected=pawnReference.moves[i];expect(move.motion,`motion ${i}`).toBe(expected.motion);expect(Math.abs(move.end.x-expected.end[0]),`X ${i}`).toBeLessThan(.00006);expect(Math.abs(move.end.z-expected.end[1]),`Z ${i}`).toBeLessThan(.00006);if('center'in expected && expected.center){expect(move.center).toBeDefined();expect(Math.abs(move.center!.x-expected.center[0]),`center X ${i}`).toBeLessThan(.00006);expect(Math.abs(move.center!.z-expected.center[1]),`center Z ${i}`).toBeLessThan(.00006);}});
+  });
+  it('replays the original G71.2 contour under the LinuxCNC reference behavior',()=>{
+    const source=readFileSync(new URL('../../demo/lathe_g70_71_demo.ngc',import.meta.url),'utf8'),routine=findLinuxCncSubroutine(source,100)!;
+    const resolved=resolveLinuxCncProfile(routine,{x:15,z:3.041});expect(resolved.ok).toBe(true);if(!resolved.ok)return;
+    const result=expandLinuxCncG71({cycle:'G71.2',position:{x:15,z:-37.1},X:15,Z:3.041,profile:resolved.profile,units:'mm',D:.51,I:.5,R:.3,sourceLine:30,rawCode:'G71.2 Q100 X15 Z3.041 D0.51 I0.5 R0.3',controllerEmulation:true});
+    if(!result.ok)throw new Error(result.error.message);
+    const meaningful=result.moves.filter(move=>move.center||Math.hypot(move.end.x-move.start.x,move.end.z-move.start.z)>1e-12);
+    writeFileSync('/tmp/nc-pawn2-local.json',JSON.stringify(meaningful));expect(meaningful).toHaveLength(pawnPocketReference.moves.length);
+    meaningful.forEach((move,i)=>{const expected=pawnPocketReference.moves[i];expect(move.motion,`motion ${i}`).toBe(expected.motion);expect(Math.abs(move.end.x-expected.end[0]),`X ${i}`).toBeLessThan(.00006);expect(Math.abs(move.end.z-expected.end[1]),`Z ${i}`).toBeLessThan(.00006);if('center'in expected && expected.center){expect(move.center).toBeDefined();expect(Math.abs(move.center!.x-expected.center[0]),`center X ${i}`).toBeLessThan(.00006);expect(Math.abs(move.center!.z-expected.center[1]),`center Z ${i}`).toBeLessThan(.00006);}});
+  });
+  it('constructs the original G70 contour under the LinuxCNC reference behavior',()=>{
+    const source=readFileSync(new URL('../../demo/lathe_g70_71_demo.ngc',import.meta.url),'utf8'),routine=findLinuxCncSubroutine(source,100)!;
+    const resolved=resolveLinuxCncProfile(routine,{x:15,z:3.041});expect(resolved.ok).toBe(true);if(!resolved.ok)return;
+    const result=expandLinuxCncG70({position:{x:15,z:-37.59},X:15,Z:3.041,profile:resolved.profile,units:'mm',D:.5,E:0,P:2,sourceLine:32,rawCode:'G70 Q100 X15 Z3.041 E0 D0.5 P2',controllerEmulation:true});
+    if(!result.ok)throw new Error(result.error.message);expect(result.moves.length).toBeGreaterThan(10);
+  });
   it('expands a straight OD profile into rough passes and final profile-follow moves', () => {
     const result = expandLinuxCncG71(base);
     expect(result.ok).toBe(true);

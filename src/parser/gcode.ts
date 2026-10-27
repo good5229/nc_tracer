@@ -2,7 +2,8 @@ import { expandLinuxCncMacros, findLinuxCncSubroutine } from './linuxcncMacro';
 import { expandLinuxCncG76, type ThreadMoveKind } from './linuxcncThread';
 import { expandLinuxCncG70, expandLinuxCncG71 } from './linuxcncRoughing';
 import { resolveLinuxCncProfile } from './linuxcncProfile';
-import {linuxCncLatheNoseEntry, linuxCncLatheNoseLines, type LatheInputMove, type LatheNosePoint} from './linuxcncLatheNose';
+import {linuxCncLatheNoseEntry, linuxCncLatheNoseLines, type LatheInputMove, type LatheNosePoint,type LatheCompMove} from './linuxcncLatheNose';
+import pawnDemo from '../../demo/lathe_g70_71_demo.ngc?raw';
 
 export type ValidationStatus = 'SUPPORTED' | 'PARTIAL' | 'UNSUPPORTED' | 'INVALID';
 export type Vector3 = { x: number | null; y: number | null; z: number | null };
@@ -50,6 +51,8 @@ export type ParserOptions = {
   linuxcncPointToolReference?: boolean;
   /** Explicit machine-mm tool table; tool length offsets must be zero in this profile. */
   linuxcncLatheToolReference?: { tools: Record<string,{diameter:number;orientation:number;offsetX:number;offsetZ:number}> };
+  /** Explicit LinuxCNC 2.9.4 generated-contour replay, limited to the unmodified pawn demo. */
+  linuxcncPawnContourReference?: boolean;
   initialPosition?: Vector3;
   initialUnit?: 'mm' | 'inch';
   initialDistanceMode?: 'absolute' | 'incremental';
@@ -213,6 +216,7 @@ function parseCore(text: string, options: ParserOptions, originalSource = text):
     return id;
   };
   const lines = text.replace(/^\uFEFF/, '').split(/\r?\n/);
+  if(options.linuxcncPawnContourReference && (originalSource!==pawnDemo || !pointReference)){warn(1,'INVALID_PAWN_REFERENCE','LinuxCNC 윤곽 참조는 변경하지 않은 선반 G70/G71 데모와 명시적 선반 설정에서만 사용할 수 있습니다.');return {status:'INVALID',segments,warnings,finalState:state};}
   if(latheTools && (options.linuxcncPointToolReference || !latheTools.tools || typeof latheTools.tools!=='object')){warn(1,'INVALID_LATHE_REFERENCE','점 공구와 실제 공구표 설정을 함께 사용하거나 공구표를 생략할 수 없습니다.');return {status:'INVALID',segments,warnings,finalState:state};}
   if (Object.values(state.position).some((value) => value !== null && (typeof value !== 'number' || !Number.isFinite(value) || !Number.isFinite(Math.fround(value))))) {
     warn(1, 'INVALID_INITIAL_POSITION', 'Initial coordinates must be finite Float32-representable numbers or null');
@@ -227,9 +231,9 @@ function parseCore(text: string, options: ParserOptions, originalSource = text):
   }
 
   let totalArcVertices = 0;
-  const flushLatheComp = (current:NonNullable<typeof latheComp>, cancelLine:number):boolean => {
+  const flushLatheComp = (current:NonNullable<typeof latheComp>, cancelLine:number,confirmedPrefix?:LatheCompMove[]):boolean => {
     if(!current.moves.length)return true;
-    const calculated=linuxCncLatheNoseLines(current.start,current.moves,current.diameter,current.side,current.orientation);
+    const calculated=confirmedPrefix?{ok:true as const,moves:confirmedPrefix}:linuxCncLatheNoseLines(current.start,current.moves,current.diameter,current.side,current.orientation,options.linuxcncPawnContourReference===true);
     if(!calculated.ok){warn(calculated.sourceLine,calculated.code,'선반 공구 보정 경로를 정확히 해석하지 못해 중단했습니다.');status=segments.length?'PARTIAL':'UNSUPPORTED';return false;}
     const prepared:MotionSegment[]=[];let added=0;
     for(const [i,move] of calculated.moves.entries()){
@@ -240,17 +244,18 @@ function parseCore(text: string, options: ParserOptions, originalSource = text):
       let vertices:Float64Array|undefined;
       if(move.center){
         const su=move.start.z-move.center.z,sv=move.start.x-move.center.x,eu=move.end.z-move.center.z,ev=move.end.x-move.center.x,radius=Math.hypot(su,sv);
-        if(!(radius>0)||Math.abs(radius-Math.hypot(eu,ev))>1e-8*Math.max(1,radius)){warn(move.sourceLine,'INVALID_COMP_ARC','공구 보정 원호의 반경을 확인할 수 없습니다.');status='INVALID';return false;}
+        const endRadius=Math.hypot(eu,ev);
+        if(!(radius>0)||Math.abs(radius-endRadius)>(options.linuxcncPawnContourReference ? .001 : 1e-8*Math.max(1,radius))){warn(move.sourceLine,'INVALID_COMP_ARC','공구 보정 원호의 반경을 확인할 수 없습니다.');status='INVALID';return false;}
         const a0=Math.atan2(sv,su),a1=Math.atan2(ev,eu),full=move.start.x===move.end.x&&move.start.z===move.end.z;
         const sweep=move.motion==='G02'?(full?-TAU:-normalizeAngle(a0-a1)):(full?TAU:normalizeAngle(a1-a0));
         const ratio=Math.min(1,ARC_MAX_SAGITTA_MM/radius),step=Math.min(Math.PI/36,2*Math.asin(Math.sqrt(ratio*(2-ratio))/2)),count=Math.max(1,Math.ceil(Math.abs(sweep)/step));
         added+=count+1;if(!Number.isFinite(count)||count>ARC_MAX_SEGMENTS||totalArcVertices+added>ARC_MAX_TOTAL_VERTICES){warn(move.sourceLine,'ARC_VERTEX_BUDGET','공구 보정 원호의 계산 범위를 초과했습니다.');status='INVALID';return false;}
         vertices=new Float64Array((count+1)*3);
-        for(let j=0;j<=count;j++){const angle=a0+sweep*j/count,point=toReference({x:j===count?move.end.x:move.center.x+radius*Math.sin(angle),y,z:j===count?move.end.z:move.center.z+radius*Math.cos(angle)});if(!renderablePosition(point)){warn(move.sourceLine,'FLOAT32_PRECISION_LOSS','공구 보정 원호가 표시 정밀도 범위를 벗어났습니다.');status='INVALID';return false;}vertices.set([point.x!,point.y!,point.z!],j*3);}
+        for(let j=0;j<=count;j++){const angle=a0+sweep*j/count,r=radius+(endRadius-radius)*j/count,point=toReference({x:j===count?move.end.x:move.center.x+r*Math.sin(angle),y,z:j===count?move.end.z:move.center.z+r*Math.cos(angle)});if(!renderablePosition(point)){warn(move.sourceLine,'FLOAT32_PRECISION_LOSS','공구 보정 원호가 표시 정밀도 범위를 벗어났습니다.');status='INVALID';return false;}vertices.set([point.x!,point.y!,point.z!],j*3);}
       }
       prepared.push({id:`line-${move.sourceLine}-comp-${i}`,sourceLine:move.sourceLine,rawCode:metadata.rawCode,motion:move.motion,start,end,...(vertices?{vertices}:{}),unit:state.unit,distanceMode:metadata.distanceMode,plane:'XZ',status:'SUPPORTED',warningIds:[],...(metadata.feed!==null?{feed:metadata.feed}:{}),...(metadata.spindle!==null?{spindle:metadata.spindle}:{}),...(metadata.tool!==null?{tool:metadata.tool}:{})});
     }
-    segments.push(...prepared);totalArcVertices+=added;pendingCompExit={...calculated.moves.at(-1)!.end};return true;
+    segments.push(...prepared);totalArcVertices+=added;if(!confirmedPrefix&&calculated.moves.length)pendingCompExit={...calculated.moves.at(-1)!.end};return true;
   };
   for (let index = 0; index < lines.length && !stopped; index += 1) {
     const sourceLine = index + 1;
@@ -415,7 +420,7 @@ function parseCore(text: string, options: ParserOptions, originalSource = text):
       const target={x:byLetter.get('X')?.[0] ?? state.position.x!,z:byLetter.get('Z')?.[0] ?? state.position.z!};
       const profile=resolveLinuxCncProfile(routine,target);
       if(!profile.ok){warn(sourceLine,finish?'UNSUPPORTED_G70_PROFILE':'UNSUPPORTED_G71_PROFILE',`Profile line ${profile.sourceLine}: ${profile.message}`);Object.assign(state,blockStartState);status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;}
-      const common={position:{x:state.position.x!,z:state.position.z!},X:target.x,Z:target.z,profile:profile.profile,units:'mm' as const,D:byLetter.get('D')?.[0],sourceLine,rawCode};
+      const common={position:{x:state.position.x!,z:state.position.z!},X:target.x,Z:target.z,profile:profile.profile,units:'mm' as const,D:byLetter.get('D')?.[0],sourceLine,rawCode,controllerEmulation:options.linuxcncPawnContourReference===true};
       const result=finish ? expandLinuxCncG70({...common,E:byLetter.get('E')?.[0],P:byLetter.get('P')?.[0]}) : expandLinuxCncG71({...common,cycle:gWords.includes(71.2)?'G71.2':'G71.1',I:byLetter.get('I')?.[0],R:byLetter.get('R')?.[0]});
       if(!result.ok){warn(sourceLine,result.error.code,`${finish?'G70':'G71'} 경로를 정확히 확인할 수 없어 이 구간을 그리지 않았습니다. ${result.error.message}`);Object.assign(state,blockStartState);status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;}
       if(latheComp){
@@ -434,7 +439,21 @@ function parseCore(text: string, options: ParserOptions, originalSource = text):
         if(anchorMoved){const start=toReference(state.position),end=toReference({...state.position,x:target.x,z:target.z});if(!renderablePosition(start)||!renderablePosition(end)){warn(sourceLine,'FLOAT32_PRECISION_LOSS','G70 시작 위치가 표시 정밀도 범위를 벗어났습니다.');status='INVALID';stopped=true;break;}segments.push({id:`line-${sourceLine}-cycle-anchor`,sourceLine,rawCode,motion:'G00',start,end,unit:state.unit,distanceMode:state.distanceMode,plane:'XZ',status:'SUPPORTED',warningIds:[],...(loadedTool!==null?{tool:loadedTool}:{})});}
         latheComp.start={...target};
         for(const [index,move] of cycleMoves.entries())latheComp.moves.push(index>0 && move.motion==='G00' && move.end.x===target.x && move.end.z===target.z?{motion:'G00_BYPASS',end:move.end,sourceLine}:move.center?{motion:move.motion as 'G02'|'G03',end:move.end,center:move.center,sourceLine}:{motion:move.motion as 'G00'|'G01',end:move.end,sourceLine});
-        latheComp.metadata.set(sourceLine,{rawCode,feed:state.feed,spindle:state.spindle,tool:loadedTool,distanceMode:state.distanceMode});state.position={...state.position,x:result.finalPosition.x,z:result.finalPosition.z};state.motionMode=null;continue;
+        latheComp.metadata.set(sourceLine,{rawCode,feed:state.feed,spindle:state.spindle,tool:loadedTool,distanceMode:state.distanceMode});
+        const checked=linuxCncLatheNoseLines(latheComp.start,latheComp.moves,latheComp.diameter,latheComp.side,latheComp.orientation,options.linuxcncPawnContourReference===true);
+        if(!checked.ok){
+          if(options.linuxcncPawnContourReference && checked.code==='CONCAVE_GOUGING'){
+            let prior:LatheCompMove[]=[];
+            for(let n=1;n<=latheComp.moves.length;n++){
+              if(latheComp.moves[n-1].motion==='G00_BYPASS')continue;
+              const prefix=linuxCncLatheNoseLines(latheComp.start,latheComp.moves.slice(0,n),latheComp.diameter,latheComp.side,latheComp.orientation,true);
+              if(!prefix.ok)break;prior=prefix.moves;
+            }
+            if(prior.length>1 && !flushLatheComp(latheComp,sourceLine,prior.slice(0,-1))){stopped=true;break;}
+          }
+          warn(checked.sourceLine,checked.code,checked.code==='CONCAVE_GOUGING'?'G70 공구가 오목 구간에 파고들어 경로 해석을 중단했습니다.':'G70 공구 보정 경로를 확인할 수 없어 중단했습니다.');Object.assign(state,blockStartState);status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;
+        }
+        state.position={...state.position,x:result.finalPosition.x,z:result.finalPosition.z};state.motionMode=null;continue;
       }
       const prepared:MotionSegment[]=[];let addedVertices=0;
       for(const [index,move] of result.moves.entries()){

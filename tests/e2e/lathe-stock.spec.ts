@@ -60,3 +60,12 @@ test('selects visibly labelled stock assumptions for the original demos',async({
  let region=page.getByRole('region',{name:'선반 예제 소재 형상'});await expect(region.getByLabel('예제 소재')).toHaveValue('thread-demo');await expect(region).toContainText('반경 3.175mm');
  await page.getByLabel('LinuxCNC 데모').selectOption('lathe_g70_71_demo.ngc');region=page.getByRole('region',{name:'선반 예제 소재 형상'});await expect(region.getByLabel('예제 소재')).toHaveValue('pawn-demo');await expect(region).toContainText('반경 15mm');
 });
+test('shows the original pawn reference until its first example-stock collision',async({page})=>{
+ await page.goto('/');await page.getByLabel('LinuxCNC 데모').selectOption('lathe_g70_71_demo.ngc');
+ await page.getByLabel('선반 예제 공구표 사용').check();await page.getByRole('button',{name:'예제 공구표로 다시 해석'}).click();
+ await expect(page.locator('.status')).toHaveText('PARTIAL');await expect(page.locator('.profile-info')).toContainText('내부 윤곽 재현');
+ await expect(page.getByRole('region',{name:'해석 진단'})).toContainText('파고들어');
+ const region=page.getByRole('region',{name:'선반 예제 소재 형상'});await region.getByRole('button',{name:'중단 전 형상 계산'}).click();
+ await expect(region.getByRole('status')).toContainText('중단 전 예상 형상 (완성 형상 아님)');await expect(region.getByRole('status')).toContainText('급속 이동');
+ await expect(region.getByLabel('선반 예제 소재 3D 표시')).toBeVisible();
+});
