@@ -188,3 +188,29 @@ it('uses the supplied threading angle throughout the synchronized cut',()=>{
  expect(wide.removed).toBeGreaterThan(narrow.removed);
  expect(simulateLatheStock(parsed,setup,'round-nose',undefined,false,{}, {'1':{length:2,includedAngleDegrees:0}})).toMatchObject({ok:false,message:expect.stringContaining('각도')});
 });
+it('models a rounded thread tip for ordinary and synchronized moves',()=>{
+ const setup={...options,initialPosition:{x:12,y:0,z:1}};
+ const cut='G21 G90 G18 G8\nT1 M6\nG0 X12 Z0\nG0 Z-3\nG1 X8 F100\nG0 X12\nM2';
+ const parsed=parseGcode(cut,setup),sharp=simulateLatheStock(parsed,setup,'round-nose',undefined,false,{}, {'1':{length:2,tipRadius:0}}),rounded=simulateLatheStock(parsed,setup,'round-nose',undefined,false,{}, {'1':{length:2,tipRadius:.4}});
+ if(!sharp.ok)throw new Error(sharp.message);if(!rounded.ok)throw new Error(rounded.message);expect(rounded.removed).toBeGreaterThan(sharp.removed);
+ const thread='G21 G90 G18 G8\nT1 M6\nG0 X12 Z0\nS500 M3\nG0 X11\nG76 P1.2 Z-5.5 I-1 J.2 K1 R1 Q29.5 E1 L2\nG0 X12\nM2';
+ const parsedThread=parseGcode(thread,setup),oneCut={...parsedThread,segments:parsedThread.segments.filter(s=>s.thread?.kind==='thread-cut').slice(0,1)},sharpThread=simulateLatheStock(oneCut,setup,'round-nose',undefined,false,{}, {'1':{length:2,tipRadius:0}}),roundThread=simulateLatheStock(oneCut,setup,'round-nose',undefined,false,{}, {'1':{length:2,tipRadius:.4}});
+ if(!sharpThread.ok)throw new Error(sharpThread.message);if(!roundThread.ok)throw new Error(roundThread.message);expect(roundThread.removed).toBeGreaterThan(sharpThread.removed);
+ expect(simulateLatheStock(parsed,setup,'round-nose',undefined,false,{}, {'1':{length:2,tipRadius:2.1}})).toMatchObject({ok:false,message:expect.stringContaining('반경')});
+});
+it('matches exhaustive spindle-phase samples for a rounded tip on a tapered thread exit',()=>{
+ const setup={...options,initialPosition:{x:12,y:0,z:1}};
+ const code='G21 G90 G18 G8\nT1 M6\nG0 X12 Z0\nS500 M3\nG0 X11\nG76 P1.2 Z-5.5 I-1 J.2 K1 R1 Q29.5 E1 L2\nG0 X12\nM2';
+ const parsed=parseGcode(code,setup),segment=parsed.segments.find(s=>s.thread?.kind==='exit-taper')!,one={...parsed,segments:[segment]};
+ const shape=simulateLatheStock(one,setup,'round-nose',undefined,false,{}, {'1':{length:2,tipRadius:.4}});if(!shape.ok)throw new Error(shape.message);
+ const t=segment.thread!,na=48,nr=50,step=.2,tip=.4,angle=Math.PI/6,tangent=tip*(1-Math.sin(angle));let removed=0;
+ for(let a=0;a<na;a++){const phase=-t.spindleDirection*(a+.5)/na,lo=Math.ceil(t.phaseTurnsStart-1/(2*na)-phase-1e-12),hi=Math.floor(t.phaseTurnsEnd+1/(2*na)-phase+1e-12);
+  for(let z=0;z<25;z++)for(let r=0;r<nr;r++){const x=(r+.5)*step,pz=-6+(z+.5)*step;let hit=false;
+   for(let k=lo;k<=hi;k++){const q=Math.max(0,Math.min(1,(phase+k-t.phaseTurnsStart)/(t.phaseTurnsEnd-t.phaseTurnsStart))),tx=segment.start.x!+(segment.end.x!-segment.start.x!)*q,tz=segment.start.z!+(segment.end.z!-segment.start.z!)*q,d=x-tx;
+    if(d<0||d>2)continue;const width=d<tangent?Math.sqrt(Math.max(0,tip*tip-(d-tip)*(d-tip))):(d+tip*(1/Math.sin(angle)-1))*Math.tan(angle);if(Math.abs(pz-tz)<=width){hit=true;break;}
+   }
+   expect(shape.remaining[(z*nr+r)*na+a],`angle ${a}, z ${z}, r ${r}`).toBe(hit?0:1);if(hit)removed++;
+  }
+ }
+ expect(removed).toBeGreaterThan(0);
+});
