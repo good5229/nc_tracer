@@ -23,4 +23,4 @@ npx playwright install chromium
 npm run test:e2e
 ```
 
-GitHub Actions가 main 브랜치에서 빌드와 검사를 거쳐 GitHub Pages에 배포합니다. Vite base는 `/nc_tracer/`입니다. [공개 테스트 자료와 출처](samples/linuxcnc/README.md), [검증 계획](docs/test-plan.md), [배포 체크리스트](docs/release-checklist.md)를 참고하세요. 개인 또는 회사의 실제 NC 파일을 공개 저장소나 CI에 올리지 마세요.
+GitHub Actions가 main 브랜치에서 빌드와 검사를 거쳐 GitHub Pages에 배포합니다. Vite base는 `/nc_tracer/`입니다. [공개 테스트 자료와 출처](docs/sample-sources.md), [검증 계획](docs/test-plan.md), [배포 체크리스트](docs/release-checklist.md)를 참고하세요. 개인 또는 회사의 실제 NC 파일을 공개 저장소나 CI에 올리지 마세요.

@@ -5,3 +5,6 @@ test-results/
 .DS_Store
 
 *.tsbuildinfo
+
+# Local NC examples and user-supplied programs
+samples/
