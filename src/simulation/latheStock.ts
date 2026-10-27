@@ -12,7 +12,7 @@ export const LATHE_STOCK_PRESETS:Record<'standard'|'thread-demo'|'pawn-demo',Lat
 };
 /** Physical-tool preview for the original zero-table-radius G76 reference. */
 export const THREAD_POINT_PREVIEW_GRID:LatheStockGrid=LATHE_STOCK_PRESETS['thread-demo'];
-export type LatheStockResult={ok:true;remaining:Uint8Array;removed:number;angularCells?:number;grid:LatheStockGrid;partial?:boolean;stopLine?:number;stopMessage?:string;phaseUncertainty?:{sourceLine:number;kind:string}[];components?:StockComponent[]}|{ok:false;message:string;sourceLine?:number};
+export type LatheStockResult={ok:true;remaining:Uint8Array;removed:number;angularCells?:number;grid:LatheStockGrid;partial?:boolean;stopLine?:number;stopMessage?:string;phaseUncertainty?:{sourceLine:number;kind:string}[];components?:StockComponent[];componentLabels?:Uint32Array}|{ok:false;message:string;sourceLine?:number};
 export type LatheInsertModel='round-nose'|'example-insert';
 /** Rectangular cutting blade, tip centered at the programmed X/Z point. */
 export type PartingToolShape={width:number;length:number};
