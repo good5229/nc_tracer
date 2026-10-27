@@ -35,3 +35,19 @@ it('rejects a reversal and a concave move too short to contain the cutter',()=>{
  const gouge=linuxCncLatheNoseLines(start,[first,{end:{x:8,z:.9},motion:'G01',sourceLine:6}],.4,'right',2);
  expect(gouge).toMatchObject({ok:false,code:'CONCAVE_GOUGING',sourceLine:6});
 });
+
+it('matches the LinuxCNC tangent line-to-arc and arc-to-line reference',()=>{
+ const moves=[{end:{x:4,z:1},motion:'G01' as const,sourceLine:5},{end:{x:4,z:0},motion:'G01' as const,sourceLine:6},{end:{x:6,z:-2},center:{x:6,z:0},motion:'G02' as const,sourceLine:7},{end:{x:10,z:-2},motion:'G01' as const,sourceLine:8}];
+ const result=linuxCncLatheNoseLines({x:10,z:1},moves,.4,'left',2);expect(result.ok).toBe(true);if(!result.ok)return;
+ const expected=reference.lathe_comp_arc.moves.slice(1,-1);expect(result.moves).toHaveLength(expected.length);
+ result.moves.forEach((move,i)=>{const value=expected[i];expect(move.motion).toBe(value.motion);expect(move.end.x).toBeCloseTo(value.end[0],4);expect(move.end.z).toBeCloseTo(value.end[1],4);if('center'in value&&value.center){expect(move.center?.x).toBeCloseTo(value.center[0],4);expect(move.center?.z).toBeCloseTo(value.center[1],4);}});
+});
+
+import {linuxCncLatheNoseCancel} from '../../src/parser/linuxcncLatheNose';
+it('uses the physical end point and programmed modal coordinates after G40',()=>{
+ const result=linuxCncLatheNoseCancel({x:9.8,z:-2.4},{x:10,z:-2},{motion:'G00',x:11,sourceLine:10});
+ expect(result.ok).toBe(true);if(!result.ok)return;
+ const expected=reference.lathe_comp_arc.moves.at(-1)!;
+ expect(result.moves).toHaveLength(1);expect(result.moves[0].start).toEqual({x:9.8,z:-2.4});expect(result.moves[0].end.x).toBeCloseTo(expected.end[0],4);expect(result.moves[0].end.z).toBeCloseTo(expected.end[1],4);
+ expect(linuxCncLatheNoseCancel({x:9.8,z:-2.4},{x:10,z:-2},{motion:'G02',x:11,sourceLine:10})).toMatchObject({ok:false,code:'G40_EXIT_MUST_BE_STRAIGHT'});
+});

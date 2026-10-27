@@ -2,6 +2,7 @@ import { expandLinuxCncMacros, findLinuxCncSubroutine } from './linuxcncMacro';
 import { expandLinuxCncG76 } from './linuxcncThread';
 import { expandLinuxCncG70, expandLinuxCncG71 } from './linuxcncRoughing';
 import { resolveLinuxCncProfile } from './linuxcncProfile';
+import {linuxCncLatheNoseEntry, linuxCncLatheNoseLines, type LatheInputMove, type LatheNosePoint} from './linuxcncLatheNose';
 
 export type ValidationStatus = 'SUPPORTED' | 'PARTIAL' | 'UNSUPPORTED' | 'INVALID';
 export type Vector3 = { x: number | null; y: number | null; z: number | null };
@@ -46,6 +47,8 @@ export type ParserOptions = {
   controllerProfile?: 'generic' | 'linuxcnc';
   /** Explicit synthetic reference setup: zero-offset G54, zero-diameter/length tools, stationary M6, G8. */
   linuxcncPointToolReference?: boolean;
+  /** Explicit machine-mm tool table; tool length offsets must be zero in this profile. */
+  linuxcncLatheToolReference?: { tools: Record<string,{diameter:number;orientation:number;offsetX:number;offsetZ:number}> };
   initialPosition?: Vector3;
   initialUnit?: 'mm' | 'inch';
   initialDistanceMode?: 'absolute' | 'incremental';
@@ -192,7 +195,12 @@ function parseCore(text: string, options: ParserOptions, originalSource = text):
   let stopped = false;
   let spindleRunning = false;
   let cutterCompActive = false;
-  const pointReference = options.controllerProfile === 'linuxcnc' && options.linuxcncPointToolReference === true;
+  const latheTools=options.controllerProfile==='linuxcnc'?options.linuxcncLatheToolReference:undefined;
+  const pointReference = options.controllerProfile === 'linuxcnc' && (options.linuxcncPointToolReference === true || latheTools!==undefined);
+  let loadedTool:number|null=null;
+  const motionTool=()=>latheTools?loadedTool:state.tool;
+  let latheComp:{start:LatheNosePoint;side:'left'|'right';diameter:number;orientation:number;moves:LatheInputMove[];metadata:Map<number,{rawCode:string;feed:number|null;spindle:number|null;tool:number|null}>}|null=null;
+  let pendingCompExit:LatheNosePoint|null=null;
   let latheRadiusMode = pointReference;
   const localOffset = {x:0,y:0,z:0};
   const toReference = (p:Vector3):Vector3 => ({x:p.x === null ? null : p.x+localOffset.x, y:p.y === null ? null : p.y+localOffset.y, z:p.z === null ? null : p.z+localOffset.z});
@@ -203,6 +211,7 @@ function parseCore(text: string, options: ParserOptions, originalSource = text):
     return id;
   };
   const lines = text.replace(/^\uFEFF/, '').split(/\r?\n/);
+  if(latheTools && (options.linuxcncPointToolReference || !latheTools.tools || typeof latheTools.tools!=='object')){warn(1,'INVALID_LATHE_REFERENCE','점 공구와 실제 공구표 설정을 함께 사용하거나 공구표를 생략할 수 없습니다.');return {status:'INVALID',segments,warnings,finalState:state};}
   if (Object.values(state.position).some((value) => value !== null && (typeof value !== 'number' || !Number.isFinite(value) || !Number.isFinite(Math.fround(value))))) {
     warn(1, 'INVALID_INITIAL_POSITION', 'Initial coordinates must be finite Float32-representable numbers or null');
     state.position = unknownPosition();
@@ -216,6 +225,31 @@ function parseCore(text: string, options: ParserOptions, originalSource = text):
   }
 
   let totalArcVertices = 0;
+  const flushLatheComp = (current:NonNullable<typeof latheComp>, cancelLine:number):boolean => {
+    if(!current.moves.length)return true;
+    const calculated=linuxCncLatheNoseLines(current.start,current.moves,current.diameter,current.side,current.orientation);
+    if(!calculated.ok){warn(calculated.sourceLine,calculated.code,'선반 공구 보정 경로를 정확히 해석하지 못해 중단했습니다.');status=segments.length?'PARTIAL':'UNSUPPORTED';return false;}
+    const prepared:MotionSegment[]=[];let added=0;
+    for(const [i,move] of calculated.moves.entries()){
+      const metadata=current.metadata.get(move.sourceLine);
+      if(!metadata){warn(cancelLine,'LATHE_COMP_METADATA','공구 보정 원본 행을 확인할 수 없습니다.');status='INVALID';return false;}
+      const y=state.position.y, start=toReference({x:move.start.x,y,z:move.start.z}),end=toReference({x:move.end.x,y,z:move.end.z});
+      if(!renderablePosition(start)||!renderablePosition(end)){warn(move.sourceLine,'FLOAT32_PRECISION_LOSS','공구 보정 좌표가 표시 정밀도 범위를 벗어났습니다.');status='INVALID';return false;}
+      let vertices:Float64Array|undefined;
+      if(move.center){
+        const su=move.start.z-move.center.z,sv=move.start.x-move.center.x,eu=move.end.z-move.center.z,ev=move.end.x-move.center.x,radius=Math.hypot(su,sv);
+        if(!(radius>0)||Math.abs(radius-Math.hypot(eu,ev))>1e-8*Math.max(1,radius)){warn(move.sourceLine,'INVALID_COMP_ARC','공구 보정 원호의 반경을 확인할 수 없습니다.');status='INVALID';return false;}
+        const a0=Math.atan2(sv,su),a1=Math.atan2(ev,eu),full=move.start.x===move.end.x&&move.start.z===move.end.z;
+        const sweep=move.motion==='G02'?(full?-TAU:-normalizeAngle(a0-a1)):(full?TAU:normalizeAngle(a1-a0));
+        const ratio=Math.min(1,ARC_MAX_SAGITTA_MM/radius),step=Math.min(Math.PI/36,2*Math.asin(Math.sqrt(ratio*(2-ratio))/2)),count=Math.max(1,Math.ceil(Math.abs(sweep)/step));
+        added+=count+1;if(!Number.isFinite(count)||count>ARC_MAX_SEGMENTS||totalArcVertices+added>ARC_MAX_TOTAL_VERTICES){warn(move.sourceLine,'ARC_VERTEX_BUDGET','공구 보정 원호의 계산 범위를 초과했습니다.');status='INVALID';return false;}
+        vertices=new Float64Array((count+1)*3);
+        for(let j=0;j<=count;j++){const angle=a0+sweep*j/count,point=toReference({x:j===count?move.end.x:move.center.x+radius*Math.sin(angle),y,z:j===count?move.end.z:move.center.z+radius*Math.cos(angle)});if(!renderablePosition(point)){warn(move.sourceLine,'FLOAT32_PRECISION_LOSS','공구 보정 원호가 표시 정밀도 범위를 벗어났습니다.');status='INVALID';return false;}vertices.set([point.x!,point.y!,point.z!],j*3);}
+      }
+      prepared.push({id:`line-${move.sourceLine}-comp-${i}`,sourceLine:move.sourceLine,rawCode:metadata.rawCode,motion:move.motion,start,end,...(vertices?{vertices}:{}),unit:state.unit,distanceMode:state.distanceMode,plane:'XZ',status:'SUPPORTED',warningIds:[],...(metadata.feed!==null?{feed:metadata.feed}:{}),...(metadata.spindle!==null?{spindle:metadata.spindle}:{}),...(metadata.tool!==null?{tool:metadata.tool}:{})});
+    }
+    segments.push(...prepared);totalArcVertices+=added;pendingCompExit={...calculated.moves.at(-1)!.end};return true;
+  };
   for (let index = 0; index < lines.length && !stopped; index += 1) {
     const sourceLine = index + 1;
     const rawCode = lines[index];
@@ -252,30 +286,32 @@ function parseCore(text: string, options: ParserOptions, originalSource = text):
     const thread = linuxcnc && gWords.includes(76);
     const rough = pointReference && (gWords.includes(71.1) || gWords.includes(71.2));
     const finish = pointReference && gWords.includes(70);
+    const enableLatheComp=!!latheTools && gWords.some(g=>[41,42,41.1,42.1].includes(g));
     if (pathControl || dwell) knownLetters.add('P');
     if (pathControl) knownLetters.add('Q');
     if (thread) for (const letter of ['P','Q','H','E','L','D']) knownLetters.add(letter);
     if (rough) for (const letter of ['Q','D']) knownLetters.add(letter);
     if (finish) for (const letter of ['Q','D','E','P']) knownLetters.add(letter);
+    if (enableLatheComp) for(const letter of ['D','L']) knownLetters.add(letter);
     const unsupportedLetter = tokens.find((t) => !knownLetters.has(t.letter));
     if (unsupportedLetter || byLetter.has('M') && mWords.some((m) => !(linuxcnc ? [2, 3, 4, 5, 30, ...(pointReference ? [6] : [])] : [2, 30]).includes(m))) {
       warn(sourceLine, 'UNSUPPORTED_BLOCK', 'Unsupported word or machine command; interpretation stopped here');
       status = segments.length ? 'PARTIAL' : 'UNSUPPORTED'; stopped = true; break;
     }
 
-    const supportedG = new Set([0, 1, 2, 3, 17, 18, 19, 20, 21, 90, 91, ...(linuxcnc ? [4, 8, 61, 61.1, 64, 76] : []), ...(pointReference ? [40, 41, 42, 43, 49, 54, 70, 71.1, 71.2, 92, 92.1] : [])]);
+    const supportedG = new Set([0, 1, 2, 3, 17, 18, 19, 20, 21, 90, 91, ...(linuxcnc ? [4, 8, 61, 61.1, 64, 76] : []), ...(pointReference ? [40, 41, 42, 43, 49, 54, 70, 71.1, 71.2, 92, 92.1] : []), ...(latheTools ? [41.1,42.1] : [])]);
     const badG = gWords.find((g) => !supportedG.has(g));
     if (badG !== undefined) {
       warn(sourceLine, 'UNSUPPORTED_GCODE', `G${badG} is outside the supported profile; interpretation stopped here`);
       status = segments.length ? 'PARTIAL' : 'UNSUPPORTED'; stopped = true; break;
     }
     const conflicts = [
-      [0, 1, 2, 3, 70, 71.1, 71.2, 76], [90, 91], [20, 21], [17, 18, 19], [61, 61.1, 64], [40,41,42], [43,49], [92,92.1],
+      [0, 1, 2, 3, 70, 71.1, 71.2, 76], [90, 91], [20, 21], [17, 18, 19], [61, 61.1, 64], [40,41,42,41.1,42.1], [43,49], [92,92.1],
     ].some((group) => group.filter((g) => gWords.includes(g)).length > 1);
     if (conflicts) {
       warn(sourceLine, 'CONFLICTING_MODAL', 'Conflicting modal groups in one block'); status = 'INVALID'; stopped = true; break;
     }
-    if (pointReference && ((cutterCompActive && gWords.some(g=>[41,42,54,70,71.1,71.2,92,92.1].includes(g))) || ((gWords.includes(41) || gWords.includes(42)) && gWords.some(g=>[54,70,71.1,71.2,92,92.1].includes(g))))) {
+    if (pointReference && ((cutterCompActive && gWords.some(g=>[41,42,41.1,42.1,54,70,71.1,71.2,92,92.1].includes(g))) || ((gWords.includes(41) || gWords.includes(42) || gWords.includes(41.1) || gWords.includes(42.1)) && gWords.some(g=>[54,70,71.1,71.2,92,92.1].includes(g))))) {
       warn(sourceLine,'INVALID_CUTTER_COMP','Coordinate or G71 changes are not supported while cutter compensation is active');status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;
     }
     if ((pathControl || dwell) && (['P', 'Q'].some(letter => (byLetter.get(letter)?.length ?? 0) > 1 || (byLetter.get(letter)?.[0] ?? 0) < 0) || (dwell && (!byLetter.has('P') || pathControl || ['X','Y','Z','I','J','K','R'].some(letter => byLetter.has(letter)) || gWords.some(g => [0,1,2,3].includes(g)))) || (pathControl && ((byLetter.has('Q') && !byLetter.has('P')) || ((byLetter.has('P') || byLetter.has('Q')) && ['X','Y','Z','I','J','K','R'].some(letter => byLetter.has(letter))))))) {
@@ -296,8 +332,8 @@ function parseCore(text: string, options: ParserOptions, originalSource = text):
     if (gWords.includes(18)) state.plane = 'XZ';
     if (gWords.includes(19)) state.plane = 'YZ';
     if (gWords.includes(8)) latheRadiusMode = true;
-    if (pointReference && gWords.includes(40)) cutterCompActive = false;
-    if (pointReference && (gWords.includes(41) || gWords.includes(42))) cutterCompActive = true;
+    if (!latheTools && pointReference && gWords.includes(40)) cutterCompActive = false;
+    if (!latheTools && pointReference && (gWords.includes(41) || gWords.includes(42))) cutterCompActive = true;
     if (mWords.includes(3) || mWords.includes(4)) spindleRunning = true;
     if (mWords.includes(5)) spindleRunning = false;
     if (mWords.includes(6)) spindleRunning = false;
@@ -319,6 +355,28 @@ function parseCore(text: string, options: ParserOptions, originalSource = text):
     }
     if (byLetter.has('S')) state.spindle = byLetter.get('S')![0];
     if (byLetter.has('T')) state.tool = byLetter.get('T')![0];
+    if(latheTools){
+      if(latheComp && (mWords.length || gWords.some(g=>[17,19,20,21,43,49,90,91].includes(g)))){warn(sourceLine,'UNSUPPORTED_COMP_STATE_CHANGE','공구 보정 중 기계 또는 평면 변경은 지원하지 않습니다.');Object.assign(state,blockStartState);status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;}
+      if(mWords.includes(6)){
+        if(state.tool===null || !Number.isInteger(state.tool) || state.tool<0 || (state.tool!==0 && !latheTools.tools[String(state.tool)])){warn(sourceLine,'UNKNOWN_LATHE_TOOL','공구표에서 선택한 공구를 찾을 수 없습니다.');Object.assign(state,blockStartState);status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;}
+        loadedTool=state.tool===0?null:state.tool;
+      }
+      if(gWords.includes(43)){
+        const tool=loadedTool===null?undefined:latheTools.tools[String(loadedTool)];
+        if(!tool || tool.offsetX!==0 || tool.offsetZ!==0){warn(sourceLine,'UNSUPPORTED_TOOL_LENGTH','공구 길이 보정은 공구표의 X/Z 오프셋이 명시적으로 0인 경우만 지원합니다.');Object.assign(state,blockStartState);status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;}
+      }
+      if(gWords.includes(40)){
+        if(latheComp&&!flushLatheComp(latheComp,sourceLine)){Object.assign(state,blockStartState);stopped=true;break;}
+        latheComp=null;cutterCompActive=false;
+      }
+      if(enableLatheComp){
+        const dynamic=gWords.includes(41.1)||gWords.includes(42.1),word=byLetter.get('D')?.[0],toolNumber=word===undefined?loadedTool:word;
+        const tool=toolNumber===null||toolNumber===undefined?undefined:latheTools.tools[String(toolNumber)];
+        const diameter=dynamic?(word===undefined?NaN:word*scale):tool?.diameter,orientation=dynamic?(byLetter.get('L')?.[0]??0):tool?.orientation;
+        if(pendingCompExit || state.plane!=='XZ' || !latheRadiusMode || !state.unit || !renderablePosition(state.position) || mWords.length || (byLetter.get('D')?.length??0)>1 || (byLetter.get('L')?.length??0)>1 || (!dynamic&&byLetter.has('L')) || (!dynamic && (!Number.isInteger(toolNumber) || !tool)) || diameter===undefined || !Number.isFinite(diameter) || diameter<=0 || !Number.isInteger(orientation) || orientation!<0 || orientation!>9){warn(sourceLine,'INVALID_LATHE_TOOL_COMP','공구 반경·방향과 G18/G8 시작 상태를 확인해 주세요.');Object.assign(state,blockStartState);status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;}
+        latheComp={start:{x:state.position.x!,z:state.position.z!},side:gWords.some(g=>g===41||g===41.1)?'left':'right',diameter,orientation:orientation!,moves:[],metadata:new Map()};cutterCompActive=true;
+      }
+    }
 
     if (pointReference && (gWords.includes(92) || gWords.includes(92.1))) {
       if (gWords.some(g=>[0,1,2,3,70,71.1,71.2,76].includes(g)) || mWords.length || (gWords.includes(92.1) && ['X','Y','Z'].some(axis=>byLetter.has(axis))) || (gWords.includes(92) && (!state.unit || !['X','Y','Z'].some(axis=>byLetter.has(axis))))) {
@@ -342,6 +400,7 @@ function parseCore(text: string, options: ParserOptions, originalSource = text):
     }
 
     if (finish || rough) {
+      if(latheTools){warn(sourceLine,'UNSUPPORTED_REAL_TOOL_CYCLE','실제 공구표를 사용하는 G70/G71 사이클은 아직 지원하지 않습니다.');status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;}
       const words=finish ? ['Q','X','Z','D','E','P'] : ['Q','X','Z','D','I','R'];
       const q=byLetter.get('Q')?.[0];
       if (state.plane !== 'XZ' || state.unit !== 'mm' || state.distanceMode !== 'absolute' || !latheRadiusMode || !renderablePosition(state.position) || mWords.length || (finish && gWords.length!==1) || q === undefined || !Number.isInteger(q) || q < 1 || words.some(letter=>(byLetter.get(letter)?.length ?? 0)>1) || byLetter.has('Y') || (finish && ['I','J','K','R'].some(letter=>byLetter.has(letter)))) {
@@ -374,7 +433,7 @@ function parseCore(text: string, options: ParserOptions, originalSource = text):
           for(let i=0;i<=count;i++){const angle=a0+sweep*i/count;const point=toReference({x:i===count?move.end.x:move.center.x+radius*Math.sin(angle),y:state.position.y,z:i===count?move.end.z:move.center.z+radius*Math.cos(angle)});if(!renderablePosition(point)){warn(sourceLine,'FLOAT32_PRECISION_LOSS','G70/G71 arc exceeds display precision');status='INVALID';stopped=true;break;}vertices.set([point.x!,point.y!,point.z!],i*3);}
           if(stopped)break;
         }
-        prepared.push({id:`line-${sourceLine}-segment-${index}`,sourceLine,rawCode,motion:move.motion,start,end,...(vertices?{vertices}:{}),unit:state.unit,distanceMode:state.distanceMode,plane:state.plane,status:'SUPPORTED',warningIds:[],...(state.feed!==null?{feed:state.feed}:{}),...(state.tool!==null?{tool:state.tool}:{})});
+        prepared.push({id:`line-${sourceLine}-segment-${index}`,sourceLine,rawCode,motion:move.motion,start,end,...(vertices?{vertices}:{}),unit:state.unit,distanceMode:state.distanceMode,plane:state.plane,status:'SUPPORTED',warningIds:[],...(state.feed!==null?{feed:state.feed}:{}),...(motionTool()!==null?{tool:motionTool()!}:{})});
       }
       if(stopped){Object.assign(state,blockStartState);break;}
       segments.push(...prepared);totalArcVertices+=addedVertices;state.position={...state.position,x:result.finalPosition.x,z:result.finalPosition.z};state.motionMode=null;continue;
@@ -398,7 +457,7 @@ function parseCore(text: string, options: ParserOptions, originalSource = text):
         warn(sourceLine, 'FLOAT32_PRECISION_LOSS', 'G76 coordinates exceed the supported display precision'); Object.assign(state, blockStartState); status = 'INVALID'; stopped = true; break;
       }
       for (const [index, move] of result.moves.entries()) {
-        if (move.start.x !== move.end.x || move.start.y !== move.end.y || move.start.z !== move.end.z) segments.push({id:`line-${sourceLine}-segment-${index}`, sourceLine, ...(byLetter.has('N') ? {nBlock:String(byLetter.get('N')![0])} : {}), rawCode, motion:move.motion, start:toReference(move.start), end:toReference(move.end), unit:state.unit, distanceMode:state.distanceMode, plane:state.plane, status:'SUPPORTED', warningIds:[], ...(state.feed !== null ? {feed:state.feed} : {}), ...(state.spindle !== null ? {spindle:state.spindle} : {}), ...(state.tool !== null ? {tool:state.tool} : {})});
+        if (move.start.x !== move.end.x || move.start.y !== move.end.y || move.start.z !== move.end.z) segments.push({id:`line-${sourceLine}-segment-${index}`, sourceLine, ...(byLetter.has('N') ? {nBlock:String(byLetter.get('N')![0])} : {}), rawCode, motion:move.motion, start:toReference(move.start), end:toReference(move.end), unit:state.unit, distanceMode:state.distanceMode, plane:state.plane, status:'SUPPORTED', warningIds:[], ...(state.feed !== null ? {feed:state.feed} : {}), ...(state.spindle !== null ? {spindle:state.spindle} : {}), ...(motionTool() !== null ? {tool:motionTool()!} : {})});
       }
       state.position = result.finalPosition;
       state.motionMode = null;
@@ -445,7 +504,21 @@ function parseCore(text: string, options: ParserOptions, originalSource = text):
         Object.assign(state, blockStartState);
         status = 'INVALID'; stopped = true; break;
       }
-      const referenceStart = toReference(start), referenceEnd = toReference(end);
+      if(latheComp){
+        if(state.plane!=='XZ' || byLetter.has('Y') || !renderablePosition(start) || !renderablePosition(end) || latheComp.moves.length>=10000){warn(sourceLine,'UNSUPPORTED_LATHE_COMP_MOVE','공구 보정 중 XZ 평면의 알려진 이동만 지원합니다.');Object.assign(state,blockStartState);status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;}
+        const endpoint={x:end.x!,z:end.z!};
+        if(!latheComp.moves.length && !arcMotion){const entry=linuxCncLatheNoseEntry(latheComp.start,endpoint,latheComp.diameter,latheComp.side,latheComp.orientation);if(!entry.ok){warn(sourceLine,entry.code,'선반 공구 보정 진입 이동을 확인해 주세요.');Object.assign(state,blockStartState);status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;}}
+        if(arcMotion){
+          const arc=solveArc(start,end,'XZ',state.motionMode==='G02',byLetter,scale);
+          if(!arc){warn(sourceLine,'INVALID_ARC_GEOMETRY','공구 보정 원호의 중심을 확인할 수 없습니다.');Object.assign(state,blockStartState);status='INVALID';stopped=true;break;}
+          latheComp.moves.push({motion:state.motionMode as 'G02'|'G03',end:endpoint,center:{z:arc.centerU,x:arc.centerV},sourceLine});
+        }else latheComp.moves.push({motion:state.motionMode as 'G00'|'G01',end:endpoint,sourceLine});
+        latheComp.metadata.set(sourceLine,{rawCode,feed:state.feed,spindle:state.spindle,tool:loadedTool});state.position=end;continue;
+      }
+      if(pendingCompExit && arcMotion){warn(sourceLine,'G40_EXIT_MUST_BE_STRAIGHT','G40 이후 첫 이동은 직선이어야 합니다.');Object.assign(state,blockStartState);status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;}
+      const exitPoint=pendingCompExit as LatheNosePoint|null;
+      const physicalStart=exitPoint?{...start,x:exitPoint.x,z:exitPoint.z}:start;
+      const referenceStart = toReference(physicalStart), referenceEnd = toReference(end);
       const endOffset = float32Offset(referenceEnd);
       if (!arcMotion && endOffset > FLOAT32_MAX_OFFSET_MM) {
         warn(sourceLine, 'FLOAT32_PRECISION_LOSS', precisionLossMessage(endOffset));
@@ -506,15 +579,16 @@ function parseCore(text: string, options: ParserOptions, originalSource = text):
         if (stopped) break;
         totalArcVertices += arcVertexCount;
         state.position = end;
-        segments.push({ id: `line-${sourceLine}-segment-0`, sourceLine, ...(byLetter.has('N') ? { nBlock: String(byLetter.get('N')![0]) } : {}), rawCode, motion: state.motionMode, start:referenceStart, end:referenceEnd, vertices, unit: state.unit, distanceMode: state.distanceMode, plane: state.plane, status: 'SUPPORTED', warningIds: [], ...(state.feed !== null ? { feed: state.feed } : {}), ...(state.spindle !== null ? { spindle: state.spindle } : {}), ...(state.tool !== null ? { tool: state.tool } : {}) });
+        segments.push({ id: `line-${sourceLine}-segment-0`, sourceLine, ...(byLetter.has('N') ? { nBlock: String(byLetter.get('N')![0]) } : {}), rawCode, motion: state.motionMode, start:referenceStart, end:referenceEnd, vertices, unit: state.unit, distanceMode: state.distanceMode, plane: state.plane, status: 'SUPPORTED', warningIds: [], ...(state.feed !== null ? { feed: state.feed } : {}), ...(state.spindle !== null ? { spindle: state.spindle } : {}), ...(motionTool() !== null ? { tool: motionTool()! } : {}) });
         if (mWords.includes(2) || mWords.includes(30)) { programEndIndex = index; stopped = true; }
         continue;
       }
       state.position = end;
       if (renderablePosition(referenceStart) && renderablePosition(referenceEnd)) {
-        if (start.x !== end.x || start.y !== end.y || start.z !== end.z) {
-          segments.push({ id: `line-${sourceLine}-segment-0`, sourceLine, ...(byLetter.has('N') ? { nBlock: String(byLetter.get('N')![0]) } : {}), rawCode, motion: state.motionMode, start:referenceStart, end:referenceEnd, unit: state.unit, distanceMode: state.distanceMode, plane: state.plane, status: 'SUPPORTED', warningIds: [], ...(state.feed !== null ? { feed: state.feed } : {}), ...(state.spindle !== null ? { spindle: state.spindle } : {}), ...(state.tool !== null ? { tool: state.tool } : {}) });
+        if (referenceStart.x !== referenceEnd.x || referenceStart.y !== referenceEnd.y || referenceStart.z !== referenceEnd.z) {
+          segments.push({ id: `line-${sourceLine}-segment-0`, sourceLine, ...(byLetter.has('N') ? { nBlock: String(byLetter.get('N')![0]) } : {}), rawCode, motion: state.motionMode, start:referenceStart, end:referenceEnd, unit: state.unit, distanceMode: state.distanceMode, plane: state.plane, status: 'SUPPORTED', warningIds: [], ...(state.feed !== null ? { feed: state.feed } : {}), ...(state.spindle !== null ? { spindle: state.spindle } : {}), ...(motionTool() !== null ? { tool: motionTool()! } : {}) });
         }
+        pendingCompExit=null;
       } else {
         warn(sourceLine, 'POSITION_UNKNOWN', 'Position is not fully known; no line segment was emitted');
         status = 'PARTIAL';
@@ -525,6 +599,7 @@ function parseCore(text: string, options: ParserOptions, originalSource = text):
       stopped = true;
     }
   }
+  if(latheComp && !stopped){warn(lines.length,'UNCLOSED_LATHE_COMP','공구 보정이 G40으로 해제되지 않아 경로를 표시하지 않습니다.');status=segments.length?'PARTIAL':'UNSUPPORTED';state.position=unknownPosition();}
   if (programEndIndex !== null) {
     for (let index = programEndIndex + 1; index < lines.length; index += 1) {
       if (lines[index].trim() === '%') continue;
