@@ -36,6 +36,11 @@ test('explains the unsupported queued arc while keeping its verified prefix',asy
  await page.locator('.topbar input[type=file]').setInputFiles({name:'g70-prior-arc.ngc',mimeType:'text/plain',buffer:readFileSync('tests/fixtures/g70_comp_pre_arc_left_cw.ngc')});
  await expect(page.locator('.status')).toHaveText('PARTIAL');await expect(page.getByRole('region',{name:'해석 진단'})).toContainText('직전 보정 원호');await expect(page.locator('.counter')).toContainText('/ 3');
 });
+test('explains the invalid compensated arc reported by LinuxCNC',async({page})=>{
+ await page.goto('/');await page.getByLabel('컨트롤러 프로파일').selectOption('linuxcnc');await page.getByLabel('선반 예제 공구표 사용').check();
+ await page.locator('.topbar input[type=file]').setInputFiles({name:'g70-invalid-arc.ngc',mimeType:'text/plain',buffer:readFileSync('tests/fixtures/g70_comp_arc_anchor_left_ccw.ngc')});
+ await expect(page.locator('.status')).toHaveText('PARTIAL');await expect(page.getByRole('region',{name:'해석 진단'})).toContainText('원호의 반지름이 맞지 않아');
+});
 test('renders G70 with a supported queued compensated arc',async({page})=>{
  await page.goto('/');await page.getByLabel('컨트롤러 프로파일').selectOption('linuxcnc');await page.getByLabel('선반 예제 공구표 사용').check();
  await page.locator('.topbar input[type=file]').setInputFiles({name:'g70-arc-anchor.ngc',mimeType:'text/plain',buffer:readFileSync('tests/fixtures/g70_comp_arc_anchor_left_cw.ngc')});

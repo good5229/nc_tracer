@@ -467,7 +467,7 @@ function parseCore(text: string, options: ParserOptions, originalSource = text):
             }
             if(prior.length>1 && !flushLatheComp(latheComp,sourceLine,prior.slice(0,-1))){stopped=true;break;}
           }
-          warn(checked.sourceLine,checked.code,checked.code==='CONCAVE_GOUGING'?'G70 공구가 오목 구간에 파고들어 경로 해석을 중단했습니다.':checked.code==='UNSUPPORTED_COMP_G70_ARC_QUEUE'?'G70 직전 보정 원호의 대기열 연결은 검증 범위 밖이어서 시작점 이동까지만 표시합니다.':'G70 공구 보정 경로를 확인할 수 없어 중단했습니다.');Object.assign(state,blockStartState);status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;
+          warn(checked.sourceLine,checked.code,checked.code==='CONCAVE_GOUGING'?'G70 공구가 오목 구간에 파고들어 경로 해석을 중단했습니다.':checked.code==='LINUXCNC_INVALID_COMP_ARC'?'LinuxCNC 2.9.4의 G70 공구 보정 대기열에서 생성된 원호의 반지름이 맞지 않아 경로 해석을 중단했습니다.':checked.code==='UNSUPPORTED_COMP_G70_ARC_QUEUE'?'G70 직전 보정 원호의 대기열 연결은 검증 범위 밖이어서 시작점 이동까지만 표시합니다.':'G70 공구 보정 경로를 확인할 수 없어 중단했습니다.');Object.assign(state,blockStartState);status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;
         }
         state.position={...state.position,x:result.finalPosition.x,z:result.finalPosition.z};state.motionMode=null;continue;
       }

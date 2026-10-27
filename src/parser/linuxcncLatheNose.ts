@@ -88,7 +88,18 @@ export function linuxCncLatheNoseLines(start:LatheNosePoint,lines:LatheInputMove
     const arcQueueError=(code:string):LatheCompLines=>({ok:false,code,sourceLine:line.sourceLine,committed:moves.slice(0,-1)});
     const originalRadius=Math.hypot(queuedArc.start.x-queuedArc.center!.x,queuedArc.start.z-queuedArc.center!.z),anchorRadius=Math.hypot(pending.start.x-queuedArc.center!.x,pending.start.z-queuedArc.center!.z);
     if(!(originalRadius>0)||Math.abs(anchorRadius-originalRadius)>1e-9*Math.max(1,originalRadius))return arcQueueError('UNSUPPORTED_COMP_G70_ARC_QUEUE');
-    if(!(beta < -0.01 || beta > Math.PI+0.01))return arcQueueError('UNSUPPORTED_COMP_G70_ARC_QUEUE');
+    if(!(beta < -0.01 || beta > Math.PI+0.01)){
+     // In LinuxCNC's convex branch move_endpoint_and_flush changes the
+     // queued arc's endpoint to the repositioned compensated center.
+     // Report its explicit radius-mismatch error when that endpoint cannot
+     // lie on the queued arc; do not invent a path for the other cases.
+     if(beta>0.01&&beta<Math.PI-0.01){
+      const target=toolPoint(center),newRadius=Math.hypot(target.x-queuedArc.center!.x,target.z-queuedArc.center!.z);
+      const oldRadius=Math.hypot(queuedArc.end.x-queuedArc.center!.x,queuedArc.end.z-queuedArc.center!.z);
+      if(Math.abs(oldRadius-newRadius)>.01)return arcQueueError('LINUXCNC_INVALID_COMP_ARC');
+     }
+     return arcQueueError('UNSUPPORTED_COMP_G70_ARC_QUEUE');
+    }
     const previousCenter=sub(queuedArc.center!,shift),oldRadius=Math.hypot(queuedArc.end.x-queuedArc.center!.x,queuedArc.end.z-queuedArc.center!.z),ccw=queuedArc.motion==='G03';
     const inside=(side==='left'&&ccw)||(side==='right'&&!ccw),uncompensatedRadius=inside?oldRadius+radius:oldRadius-radius;
     const base=Math.atan2(line.end.x-programPoint.x,line.end.z-programPoint.z),arcTheta=base+(ccw?Math.PI/2:-Math.PI/2),phi=Math.atan2(previousCenter.x-programPoint.x,previousCenter.z-programPoint.z);
