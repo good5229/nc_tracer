@@ -42,10 +42,20 @@ it('does not bypass active compensation or the required first move after G40 for
  const source=readFileSync(new URL('../fixtures/g70_single.ngc',import.meta.url),'utf8');
  const table={...settings,linuxcncLatheToolReference:{tools:{'1':{diameter:.4,orientation:2,offsetX:0,offsetZ:0}}}};
  const before=`T1 M6\n${source}`;
- const active=parseGcode(before.replace('G70 Q100','G41\nG70 Q100'),table);
+ const active=parseGcode(before.replace('G70 Q100 X10 Z1 D0 E0 P1','G41\nG71.2 Q100 X10 Z1 D0 I1 R0.3'),table);
  expect(active.warnings.at(-1)?.code).toBe('INVALID_CUTTER_COMP');
  const noExit=parseGcode(before.replace('G70 Q100','G41\nG1 X8 Z1\nG40\nG70 Q100'),table);
  expect(noExit.warnings.at(-1)?.code).toBe('INVALID_LATHE_CYCLE_TOOL');
+});
+it('supports the bounded compensated G70 reference fixture',()=>{
+ const source=readFileSync(new URL('../fixtures/g70_comp_straight.ngc',import.meta.url),'utf8');
+ const table={...settings,linuxcncLatheToolReference:{tools:{'1':{diameter:.4,orientation:2,offsetX:0,offsetZ:0}}}};
+ const result=parseGcode(source,table);
+ expect(result.warnings).toEqual([]);expect(result.status).toBe('SUPPORTED');
+ const expected=[['G00',10,3],['G00',10,1],['G00',4,.6],['G01',4,-5],['G01',7.8,-5],['G00',12,-5]] as const;
+ expect(result.segments).toHaveLength(expected.length);
+ result.segments.forEach((segment,i)=>{expect(segment.motion).toBe(expected[i][0]);expect(segment.end.x).toBeCloseTo(expected[i][1],4);expect(segment.end.z).toBeCloseTo(expected[i][2],4);});
+ expect(parseGcode(source.replace('P1','P2'),table).warnings.at(-1)?.code).toBe('UNSUPPORTED_COMP_G70');
 });
 it('stops the G76 demo at the actual short compensation entry under a positive T1 diameter',()=>{
  const source=readFileSync(new URL('../../demo/lathe-g76.ngc',import.meta.url),'utf8');

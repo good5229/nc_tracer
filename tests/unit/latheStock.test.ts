@@ -27,3 +27,9 @@ it('uses loaded-tool G70 moves in the example stock calculation',()=>{
  expect(outcome.ok).toBe(true);
  if(outcome.ok)expect(outcome.removed).toBeGreaterThan(0);
 });
+it('uses the compensated G70 path in the example stock calculation',()=>{
+ const source=readFileSync(new URL('../fixtures/g70_comp_straight.ngc',import.meta.url),'utf8').replace('G1 X8 Z-5','G1 X11 Z-5');
+ const parsed=parseGcode(source,options);expect(parsed.status).toBe('SUPPORTED');
+ const outcome=simulateLatheStock(parsed,options);
+ expect(outcome.ok).toBe(true);if(outcome.ok)expect(outcome.removed).toBeGreaterThan(0);
+});

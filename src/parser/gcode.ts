@@ -311,7 +311,7 @@ function parseCore(text: string, options: ParserOptions, originalSource = text):
     if (conflicts) {
       warn(sourceLine, 'CONFLICTING_MODAL', 'Conflicting modal groups in one block'); status = 'INVALID'; stopped = true; break;
     }
-    if (pointReference && ((cutterCompActive && gWords.some(g=>[41,42,41.1,42.1,54,70,71.1,71.2,92,92.1].includes(g))) || ((gWords.includes(41) || gWords.includes(42) || gWords.includes(41.1) || gWords.includes(42.1)) && gWords.some(g=>[54,70,71.1,71.2,92,92.1].includes(g))))) {
+    if (pointReference && ((cutterCompActive && gWords.some(g=>[41,42,41.1,42.1,54,71.1,71.2,92,92.1,...(latheTools?[]:[70])].includes(g))) || ((gWords.includes(41) || gWords.includes(42) || gWords.includes(41.1) || gWords.includes(42.1)) && gWords.some(g=>[54,70,71.1,71.2,92,92.1].includes(g))))) {
       warn(sourceLine,'INVALID_CUTTER_COMP','Coordinate or G71 changes are not supported while cutter compensation is active');status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;
     }
     if ((pathControl || dwell) && (['P', 'Q'].some(letter => (byLetter.get(letter)?.length ?? 0) > 1 || (byLetter.get(letter)?.[0] ?? 0) < 0) || (dwell && (!byLetter.has('P') || pathControl || ['X','Y','Z','I','J','K','R'].some(letter => byLetter.has(letter)) || gWords.some(g => [0,1,2,3].includes(g)))) || (pathControl && ((byLetter.has('Q') && !byLetter.has('P')) || ((byLetter.has('P') || byLetter.has('Q')) && ['X','Y','Z','I','J','K','R'].some(letter => byLetter.has(letter))))))) {
@@ -414,6 +414,23 @@ function parseCore(text: string, options: ParserOptions, originalSource = text):
       const common={position:{x:state.position.x!,z:state.position.z!},X:target.x,Z:target.z,profile:profile.profile,units:'mm' as const,D:byLetter.get('D')?.[0],sourceLine,rawCode};
       const result=finish ? expandLinuxCncG70({...common,E:byLetter.get('E')?.[0],P:byLetter.get('P')?.[0]}) : expandLinuxCncG71({...common,cycle:gWords.includes(71.2)?'G71.2':'G71.1',I:byLetter.get('I')?.[0],R:byLetter.get('R')?.[0]});
       if(!result.ok){warn(sourceLine,result.error.code,`${finish?'G70':'G71'} 경로를 정확히 확인할 수 없어 이 구간을 그리지 않았습니다. ${result.error.message}`);Object.assign(state,blockStartState);status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;}
+      if(latheComp){
+        // LinuxCNC temporarily disables compensation when positioning at the
+        // cycle anchor. Only one pass entered directly after activation is
+        // supported here; a previous buffered contour or another pass needs
+        // separate queue/lookahead semantics.
+        if(!finish || latheComp.moves.length || (byLetter.get('P')?.[0]??1)!==1 || (byLetter.get('D')?.[0]??0)!==0 || (byLetter.get('E')?.[0]??0)!==0){warn(sourceLine,'UNSUPPORTED_COMP_G70','보정 중 G70은 진입 직후 1패스, D/E 0인 경우만 지원합니다.');Object.assign(state,blockStartState);status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;}
+        const anchorMoved=state.position.x!==target.x||state.position.z!==target.z;
+        const cycleMoves=anchorMoved?result.moves.slice(1):result.moves;
+        if(anchorMoved && (!result.moves.length || result.moves[0].motion!=='G00' || result.moves[0].end.x!==target.x || result.moves[0].end.z!==target.z)){warn(sourceLine,'INVALID_COMP_G70_ANCHOR','G70 시작 위치를 확인할 수 없습니다.');status='INVALID';stopped=true;break;}
+        if(!cycleMoves.length || cycleMoves[0].center || cycleMoves[0].motion!=='G00'){warn(sourceLine,'UNSUPPORTED_COMP_G70','G70의 직선 진입 경로를 확인할 수 없습니다.');status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;}
+        const entry=linuxCncLatheNoseEntry(target,cycleMoves[0].end,latheComp.diameter,latheComp.side,latheComp.orientation);
+        if(!entry.ok){warn(sourceLine,entry.code,'G70 공구 보정 진입 이동을 확인해 주세요.');status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;}
+        if(anchorMoved){const start=toReference(state.position),end=toReference({...state.position,x:target.x,z:target.z});if(!renderablePosition(start)||!renderablePosition(end)){warn(sourceLine,'FLOAT32_PRECISION_LOSS','G70 시작 위치가 표시 정밀도 범위를 벗어났습니다.');status='INVALID';stopped=true;break;}segments.push({id:`line-${sourceLine}-cycle-anchor`,sourceLine,rawCode,motion:'G00',start,end,unit:state.unit,distanceMode:state.distanceMode,plane:'XZ',status:'SUPPORTED',warningIds:[],...(loadedTool!==null?{tool:loadedTool}:{})});}
+        latheComp.start={...target};
+        for(const move of cycleMoves)latheComp.moves.push(move.center?{motion:move.motion as 'G02'|'G03',end:move.end,center:move.center,sourceLine}:{motion:move.motion as 'G00'|'G01',end:move.end,sourceLine});
+        latheComp.metadata.set(sourceLine,{rawCode,feed:state.feed,spindle:state.spindle,tool:loadedTool});state.position={...state.position,x:result.finalPosition.x,z:result.finalPosition.z};state.motionMode=null;continue;
+      }
       const prepared:MotionSegment[]=[];let addedVertices=0;
       for(const [index,move] of result.moves.entries()){
         const start=toReference({x:move.start.x,y:state.position.y,z:move.start.z}),end=toReference({x:move.end.x,y:state.position.y,z:move.end.z});
