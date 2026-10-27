@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test';
 
 test('full-circle arc stays one playback block and canvas selection maps to its source row', async ({ page }) => {
   await page.goto('/nc_tracer/');
-  await page.locator('input[type=file]').setInputFiles({
+  await page.locator('.topbar input[type=file]').setInputFiles({
     name: 'synthetic-full-circle.nc',
     mimeType: 'text/plain',
     // The rapid establishes a known point. The full circle is one G02 block, followed by one G01 block.

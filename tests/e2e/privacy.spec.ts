@@ -4,7 +4,7 @@ test('file and paste stay in memory during load, playback and replacement', asyn
  await page.goto('/nc_tracer/');
  const requests: {url:string;method:string;body:string}[]=[];
  page.on('request', request => requests.push({url:request.url(),method:request.method(),body:request.postData() ?? ''}));
- const input=page.locator('input[type=file]');
+ const input=page.locator('.topbar input[type=file]');
  await input.setInputFiles({name:'private-check.nc',mimeType:'text/plain',buffer:Buffer.from('(private-marker-42)\nG21 G90 G00 X0 Y0 Z0\nG01 X123.456\nM30')});
  await expect(page.locator('.metrics')).toContainText('X 123.456');
  await page.getByRole('button',{name:'재생',exact:true}).click();
@@ -22,7 +22,7 @@ test('file and paste stay in memory during load, playback and replacement', asyn
 test('rejects malformed UTF-8 and supports keyboard controls on mobile', async ({page}) => {
  await page.setViewportSize({width:390,height:844});
  await page.goto('/nc_tracer/');
- await page.locator('input[type=file]').setInputFiles({name:'bad.nc',mimeType:'text/plain',buffer:Buffer.from([0xc3,0x28])});
+ await page.locator('.topbar input[type=file]').setInputFiles({name:'bad.nc',mimeType:'text/plain',buffer:Buffer.from([0xc3,0x28])});
  await expect(page.getByText(/UTF-8로 읽을 수 없습니다/)).toBeVisible();
  await page.getByRole('button',{name:'예제 불러오기'}).focus();
  await page.keyboard.press('Enter');
@@ -35,7 +35,7 @@ test('rejects malformed UTF-8 and supports keyboard controls on mobile', async (
 
 test('replacing a large file while it is being parsed keeps only the newest data', async ({page}) => {
  await page.goto('/nc_tracer/');
- const input=page.locator('input[type=file]');
+ const input=page.locator('.topbar input[type=file]');
  const huge='G21 G90 G00 X0 Y0 Z0\n'+Array.from({length:100000},(_,i)=>`G01 X${i%2+1}`).join('\n');
  await input.setInputFiles({name:'old.nc',mimeType:'text/plain',buffer:Buffer.from(huge)});
  await input.setInputFiles({name:'new.nc',mimeType:'text/plain',buffer:Buffer.from('G21 G90 G00 X0 Y0 Z0\nG01 X42\nM30')});
