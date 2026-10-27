@@ -1,0 +1,32 @@
+name: LinuxCNC reference interpreter
+on: workflow_dispatch
+permissions:
+  contents: read
+jobs:
+  reference:
+    runs-on: ubuntu-latest
+    container: debian:trixie
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the standalone LinuxCNC interpreter
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends linuxcnc-uspace coreutils
+      - name: Interpret the public demos with a synthetic tool table
+        shell: bash
+        run: |
+          cat > /tmp/reference-tool.tbl <<'TOOLS'
+          T1 P1 Z0 D1.5875 Q0
+          T2 P2 Z0 D0.5 Q0
+          T4 P4 Z0 D0.5 Q0
+          T9 P9 Z0 D0.5 Q0
+          T10 P10 Z0 D0.5 Q0
+          TOOLS
+          for file in demo/*.ngc; do
+            name=$(basename "$file")
+            echo "--- $name ---"
+            timeout 30s rs274 -g -t /tmp/reference-tool.tbl "$file" > "/tmp/$name.out" 2>&1 || echo "interpreter exit: $?"
+            wc -l "/tmp/$name.out"
+            tail -20 "/tmp/$name.out"
+          done
