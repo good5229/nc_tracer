@@ -9,7 +9,7 @@ export const LATHE_STOCK_PRESETS:Record<'standard'|'thread-demo'|'pawn-demo',Lat
  'thread-demo':{radius:3.175,zMin:-16.5,zMax:0,step:.1,radialCells:32,axialCells:165,angularSegments:48},
  'pawn-demo':{radius:15,zMin:-40,zMax:4,step:.2,radialCells:75,axialCells:220,angularSegments:48},
 };
-export type LatheStockResult={ok:true;remaining:Uint8Array;removed:number;angularCells?:number;grid:LatheStockGrid}|{ok:false;message:string;sourceLine?:number};
+export type LatheStockResult={ok:true;remaining:Uint8Array;removed:number;angularCells?:number;grid:LatheStockGrid;partial?:boolean}|{ok:false;message:string;sourceLine?:number};
 export type LatheInsertModel='round-nose'|'example-insert';
 type Point={x:number;z:number};
 const finite=(p:MotionSegment['start'])=>typeof p.x==='number'&&Number.isFinite(p.x)&&typeof p.y==='number'&&Number.isFinite(p.y)&&typeof p.z==='number'&&Number.isFinite(p.z);
@@ -36,10 +36,11 @@ function insideConvex(point:Point,polygon:Point[]):boolean{
 /** Approximate example stock. Threading assumes an ideal sharp 60-degree
  * external insert and a fixed phase during rapid motions; real acceleration,
  * holder geometry, machine limits and nonzero offsets are not modelled. */
-export function simulateLatheStock(result:ParseResult,options:ParserOptions,model:LatheInsertModel='round-nose',grid:LatheStockGrid=LATHE_STOCK):LatheStockResult{
+export function simulateLatheStock(result:ParseResult,options:ParserOptions,model:LatheInsertModel='round-nose',grid:LatheStockGrid=LATHE_STOCK,allowPartial=false):LatheStockResult{
  const table=options.linuxcncLatheToolReference?.tools;
  if(!table)return {ok:false,message:'선반 예제 공구표를 선택해 NC를 다시 해석해 주세요.'};
- if(result.status!=='SUPPORTED'||result.warnings.length)return {ok:false,message:'NC 전체 경로를 확인하지 못해 완성 형상 계산을 중단했습니다.'};
+ const partial=allowPartial&&result.status==='PARTIAL'&&result.warnings.length===1&&result.warnings[0].code==='ENTRY_TOO_SHORT';
+ if((result.status!=='SUPPORTED'||result.warnings.length)&&!partial)return {ok:false,message:'NC 전체 경로를 확인하지 못해 완성 형상 계산을 중단했습니다.'};
  if(!result.segments.length)return {ok:false,message:'계산할 선반 이동 경로가 없습니다.'};
  if(result.segments.some(s=>/\bG\s*0*76(?:\D|$)/i.test(s.rawCode)&&!s.thread))return {ok:false,message:'나사 가공의 동기화 정보를 확인할 수 없습니다.'};
  const {radialCells:nr,axialCells:nz,step,zMin,angularSegments}=grid;
@@ -94,5 +95,5 @@ export function simulateLatheStock(result:ParseResult,options:ParserOptions,mode
    }
   }
  }
- return {ok:true,remaining,removed,grid,...(angular>1?{angularCells:angular}:{})};
+ return {ok:true,remaining,removed,grid,...(partial?{partial:true}:{}),...(angular>1?{angularCells:angular}:{})};
 }

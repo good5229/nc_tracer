@@ -91,3 +91,12 @@ it('uses explicit stock dimensions and rejects inconsistent grids',()=>{
  expect(outcome.ok).toBe(true);if(outcome.ok){expect(outcome.grid).toEqual(grid);expect(outcome.remaining.length).toBe(32*165*48);}
  expect(simulateLatheStock(parsed,options,'round-nose',{...grid,radialCells:31})).toMatchObject({ok:false,message:expect.stringContaining('격자 설정')});
 });
+it('can show only the confirmed prefix of the original G76 demo without calling it complete',()=>{
+ const source=readFileSync(new URL('../../demo/lathe-g76.ngc',import.meta.url),'utf8');
+ const tools=Object.fromEntries([1,4,9].map(n=>[String(n),{diameter:.4,orientation:2,offsetX:0,offsetZ:0}]));
+ const setup={...options,linuxcncLatheToolReference:{tools}},parsed=parseGcode(source,setup);
+ expect(parsed.status).toBe('PARTIAL');expect(parsed.warnings.at(-1)?.code).toBe('ENTRY_TOO_SHORT');
+ const shape=simulateLatheStock(parsed,setup,'round-nose',LATHE_STOCK_PRESETS['thread-demo'],true);
+ if(!shape.ok)throw new Error(shape.message);expect(shape.partial).toBe(true);expect(shape.removed).toBeGreaterThan(0);
+ expect(simulateLatheStock(parsed,setup,'round-nose',LATHE_STOCK_PRESETS['thread-demo'])).toMatchObject({ok:false});
+});
