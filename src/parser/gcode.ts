@@ -1,3 +1,6 @@
+import { expandLinuxCncMacros } from './linuxcncMacro';
+import { expandLinuxCncG76 } from './linuxcncThread';
+
 export type ValidationStatus = 'SUPPORTED' | 'PARTIAL' | 'UNSUPPORTED' | 'INVALID';
 export type Vector3 = { x: number | null; y: number | null; z: number | null };
 export type Motion = 'G00' | 'G01' | 'G02' | 'G03';
@@ -39,6 +42,8 @@ export type ParseResult = {
 };
 export type ParserOptions = {
   controllerProfile?: 'generic' | 'linuxcnc';
+  /** Explicit synthetic reference setup: zero-offset G54, zero-diameter/length tools, stationary M6, G8. */
+  linuxcncPointToolReference?: boolean;
   initialPosition?: Vector3;
   initialUnit?: 'mm' | 'inch';
   initialDistanceMode?: 'absolute' | 'incremental';
@@ -71,8 +76,11 @@ function solveArc(start: Vector3, end: Vector3, plane: NonNullable<ModalState['p
     const signedR = byLetter.get('R')![0] * scale;
     const radius = Math.abs(signedR), du = eu - su, dv = ev - sv, chord = Math.hypot(du, dv);
     const tol = Math.max(1e-8, radius * 1e-8);
-    // Radius arcs with identical endpoints or exactly 180 degrees are ambiguous.
-    if (!(radius > 0) || !(chord > tol) || chord > 2 * radius + tol || Math.abs(chord - 2 * radius) <= tol) return null;
+    // A full circle has no unique center in R notation. A semicircle has a unique midpoint center.
+    if (!(radius > 0) || !(chord > tol) || chord > 2 * radius + tol) return null;
+    if (Math.abs(chord - 2 * radius) <= 1e-12 * Math.max(radius, 1)) {
+      return { centerU:(su+eu)/2, centerV:(sv+ev)/2, sweep:clockwise ? -Math.PI : Math.PI, radius, axes };
+    }
     const h = Math.sqrt(Math.max(0, radius * radius - chord * chord / 4));
     const midU = (su + eu) / 2, midV = (sv + ev) / 2;
     const centers = [
@@ -144,8 +152,28 @@ function tokenize(line: string): Array<{ letter: string; value: number; raw: str
   return tokens;
 }
 
-/** Parses the deliberately small, modal G-code subset approved for the viewer. */
+/** Parse a supported LinuxCNC macro expansion in execution order while preserving source rows. */
 export function parseGcode(text: string, options: ParserOptions = {}): ParseResult {
+  if (options.controllerProfile === 'linuxcnc' && /^\s*o\d+\s+(?:sub|call|while)\b/im.test(text)) {
+    const expansion = expandLinuxCncMacros(text);
+    if (expansion.status === 'SUPPORTED') {
+      const result = parseCore(expansion.lines.map(line => line.text).join('\n'), options);
+      for (const segment of result.segments) {
+        const source = expansion.lines[segment.sourceLine - 1];
+        if (source) { segment.sourceLine = source.sourceLine; segment.rawCode = source.sourceText; }
+      }
+      for (const warning of result.warnings) {
+        const source = expansion.lines[warning.sourceLine - 1];
+        if (source) warning.sourceLine = source.sourceLine;
+      }
+      return result;
+    }
+  }
+  return parseCore(text, options);
+}
+
+/** Parses the modal G-code subset approved for the viewer. */
+function parseCore(text: string, options: ParserOptions): ParseResult {
   const segments: MotionSegment[] = [];
   const warnings: ParseWarning[] = [];
   const state: ModalState = {
@@ -160,6 +188,11 @@ export function parseGcode(text: string, options: ParserOptions = {}): ParseResu
   };
   let status: ValidationStatus = 'SUPPORTED';
   let stopped = false;
+  let spindleRunning = false;
+  const pointReference = options.controllerProfile === 'linuxcnc' && options.linuxcncPointToolReference === true;
+  let latheRadiusMode = pointReference;
+  const localOffset = {x:0,y:0,z:0};
+  const toReference = (p:Vector3):Vector3 => ({x:p.x === null ? null : p.x+localOffset.x, y:p.y === null ? null : p.y+localOffset.y, z:p.z === null ? null : p.z+localOffset.z});
   let programEndIndex: number | null = null;
   const warn = (sourceLine: number, code: string, message: string) => {
     const id = `warning-${sourceLine}-${warnings.length}`;
@@ -213,22 +246,24 @@ export function parseGcode(text: string, options: ParserOptions = {}): ParseResu
     const knownLetters = new Set(['N', 'G', 'M', 'X', 'Y', 'Z', 'F', 'S', 'T', 'I', 'J', 'K', 'R']);
     const pathControl = linuxcnc && gWords.includes(64);
     const dwell = linuxcnc && gWords.includes(4);
+    const thread = linuxcnc && gWords.includes(76);
     if (pathControl || dwell) knownLetters.add('P');
     if (pathControl) knownLetters.add('Q');
+    if (thread) for (const letter of ['P','Q','H','E','L','D']) knownLetters.add(letter);
     const unsupportedLetter = tokens.find((t) => !knownLetters.has(t.letter));
-    if (unsupportedLetter || byLetter.has('M') && mWords.some((m) => !(linuxcnc ? [2, 3, 4, 5, 30] : [2, 30]).includes(m))) {
+    if (unsupportedLetter || byLetter.has('M') && mWords.some((m) => !(linuxcnc ? [2, 3, 4, 5, 30, ...(pointReference ? [6] : [])] : [2, 30]).includes(m))) {
       warn(sourceLine, 'UNSUPPORTED_BLOCK', 'Unsupported word or machine command; interpretation stopped here');
       status = segments.length ? 'PARTIAL' : 'UNSUPPORTED'; stopped = true; break;
     }
 
-    const supportedG = new Set([0, 1, 2, 3, 17, 18, 19, 20, 21, 90, 91, ...(linuxcnc ? [4, 61, 61.1, 64] : [])]);
+    const supportedG = new Set([0, 1, 2, 3, 17, 18, 19, 20, 21, 90, 91, ...(linuxcnc ? [4, 8, 61, 61.1, 64, 76] : []), ...(pointReference ? [40, 41, 42, 43, 49, 54, 92, 92.1] : [])]);
     const badG = gWords.find((g) => !supportedG.has(g));
     if (badG !== undefined) {
       warn(sourceLine, 'UNSUPPORTED_GCODE', `G${badG} is outside the supported profile; interpretation stopped here`);
       status = segments.length ? 'PARTIAL' : 'UNSUPPORTED'; stopped = true; break;
     }
     const conflicts = [
-      [0, 1, 2, 3], [90, 91], [20, 21], [17, 18, 19], [61, 61.1, 64],
+      [0, 1, 2, 3, 76], [90, 91], [20, 21], [17, 18, 19], [61, 61.1, 64], [40,41,42], [43,49], [92,92.1],
     ].some((group) => group.filter((g) => gWords.includes(g)).length > 1);
     if (conflicts) {
       warn(sourceLine, 'CONFLICTING_MODAL', 'Conflicting modal groups in one block'); status = 'INVALID'; stopped = true; break;
@@ -250,6 +285,10 @@ export function parseGcode(text: string, options: ParserOptions = {}): ParseResu
     if (gWords.includes(17)) state.plane = 'XY';
     if (gWords.includes(18)) state.plane = 'XZ';
     if (gWords.includes(19)) state.plane = 'YZ';
+    if (gWords.includes(8)) latheRadiusMode = true;
+    if (mWords.includes(3) || mWords.includes(4)) spindleRunning = true;
+    if (mWords.includes(5)) spindleRunning = false;
+    if (mWords.includes(6)) spindleRunning = false;
 
     const scale = state.unit === 'inch' ? 25.4 : 1;
     if (byLetter.has('F')) {
@@ -268,6 +307,52 @@ export function parseGcode(text: string, options: ParserOptions = {}): ParseResu
     }
     if (byLetter.has('S')) state.spindle = byLetter.get('S')![0];
     if (byLetter.has('T')) state.tool = byLetter.get('T')![0];
+
+    if (pointReference && (gWords.includes(92) || gWords.includes(92.1))) {
+      if (gWords.some(g=>[0,1,2,3,76].includes(g)) || mWords.length || (gWords.includes(92.1) && ['X','Y','Z'].some(axis=>byLetter.has(axis))) || (gWords.includes(92) && (!state.unit || !['X','Y','Z'].some(axis=>byLetter.has(axis))))) {
+        warn(sourceLine,'INVALID_G92','G92 needs known units and at least one axis; G92.1 must not contain axis words'); Object.assign(state,blockStartState); status='INVALID';stopped=true;break;
+      }
+      for (const axis of ['x','y','z'] as const) {
+        const word=byLetter.get(axis.toUpperCase())?.[0];
+        const current=state.position[axis];
+        if (gWords.includes(92) && word !== undefined) {
+          if (current === null) {warn(sourceLine,'UNKNOWN_G92_POSITION','G92 requires a known current coordinate'); Object.assign(state,blockStartState);status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;}
+          const desired=word*scale, nextOffset=localOffset[axis]+current-desired;
+          if (!Number.isFinite(desired) || !Number.isFinite(nextOffset)) {warn(sourceLine,'CALCULATION_OVERFLOW','G92 coordinate or offset is not finite');Object.assign(state,blockStartState);status='INVALID';stopped=true;break;}
+          localOffset[axis]=nextOffset; state.position[axis]=desired;
+        } else if (gWords.includes(92.1)) {
+          if (current !== null) state.position[axis]=current+localOffset[axis];
+          localOffset[axis]=0;
+        }
+      }
+      if(stopped)break;
+      continue;
+    }
+
+    if (thread) {
+      const required = ['P','Z','I','J','K'];
+      const words = ['P','Z','I','J','K','R','Q','H','E','L','D'];
+      if (!latheRadiusMode || state.plane !== 'XZ' || state.unit === null || state.distanceMode === null || !renderablePosition(state.position) || !spindleRunning || mWords.length > 0 || required.some(letter=>!byLetter.has(letter)) || words.some(letter=>(byLetter.get(letter)?.length ?? 0)>1) || ['X','Y'].some(letter=>byLetter.has(letter))) {
+        warn(sourceLine, 'INVALID_THREAD_SETUP', 'G76 requires G8 radius mode, G18, known position/unit/distance, running spindle, and P Z I J K');
+        Object.assign(state, blockStartState); status = segments.length ? 'PARTIAL' : 'UNSUPPORTED'; stopped = true; break;
+      }
+      const value = (letter:string) => byLetter.get(letter)?.[0];
+      const start = { x:state.position.x! / scale, y:state.position.y! / scale, z:state.position.z! / scale };
+      const z = value('Z')!;
+      const result = expandLinuxCncG76({sourceLine, rawCode, units:state.unit, start, endZ:state.distanceMode === 'absolute' ? z : start.z + z, P:value('P')!, I:value('I')!, J:value('J')!, K:value('K')!, R:value('R'), Q:value('Q'), H:value('H'), E:value('E'), L:value('L'), D:value('D')});
+      if (!result.ok) {
+        warn(sourceLine, result.error.code, result.error.message); Object.assign(state, blockStartState); status = 'INVALID'; stopped = true; break;
+      }
+      if (result.moves.some(move => !renderablePosition(toReference(move.start)) || !renderablePosition(toReference(move.end)))) {
+        warn(sourceLine, 'FLOAT32_PRECISION_LOSS', 'G76 coordinates exceed the supported display precision'); Object.assign(state, blockStartState); status = 'INVALID'; stopped = true; break;
+      }
+      for (const [index, move] of result.moves.entries()) {
+        if (move.start.x !== move.end.x || move.start.y !== move.end.y || move.start.z !== move.end.z) segments.push({id:`line-${sourceLine}-segment-${index}`, sourceLine, ...(byLetter.has('N') ? {nBlock:String(byLetter.get('N')![0])} : {}), rawCode, motion:move.motion, start:toReference(move.start), end:toReference(move.end), unit:state.unit, distanceMode:state.distanceMode, plane:state.plane, status:'SUPPORTED', warningIds:[], ...(state.feed !== null ? {feed:state.feed} : {}), ...(state.spindle !== null ? {spindle:state.spindle} : {}), ...(state.tool !== null ? {tool:state.tool} : {})});
+      }
+      state.position = result.finalPosition;
+      state.motionMode = null;
+      continue;
+    }
 
     const axes = ['X', 'Y', 'Z'] as const;
     const hasAxis = axes.some((axis) => byLetter.has(axis));
@@ -309,7 +394,8 @@ export function parseGcode(text: string, options: ParserOptions = {}): ParseResu
         Object.assign(state, blockStartState);
         status = 'INVALID'; stopped = true; break;
       }
-      const endOffset = float32Offset(end);
+      const referenceStart = toReference(start), referenceEnd = toReference(end);
+      const endOffset = float32Offset(referenceEnd);
       if (!arcMotion && endOffset > FLOAT32_MAX_OFFSET_MM) {
         warn(sourceLine, 'FLOAT32_PRECISION_LOSS', precisionLossMessage(endOffset));
         Object.assign(state, blockStartState);
@@ -350,8 +436,9 @@ export function parseGcode(text: string, options: ParserOptions = {}): ParseResu
           point[arc.axes.u] = i === count ? end[arc.axes.u] : arc.centerU + arc.radius * Math.cos(angle);
           point[arc.axes.v] = i === count ? end[arc.axes.v] : arc.centerV + arc.radius * Math.sin(angle);
           point[arc.axes.out] = start[arc.axes.out]! + (end[arc.axes.out]! - start[arc.axes.out]!) * fraction;
-          const pointOffset = float32Offset(point);
-          if (!renderablePosition(point)) {
+          const referencePoint = toReference(point);
+          const pointOffset = float32Offset(referencePoint);
+          if (!renderablePosition(referencePoint)) {
             if (pointOffset > FLOAT32_MAX_OFFSET_MM && Number.isFinite(pointOffset)) {
               warn(sourceLine, 'FLOAT32_PRECISION_LOSS', precisionLossMessage(pointOffset));
               Object.assign(state, blockStartState);
@@ -361,21 +448,21 @@ export function parseGcode(text: string, options: ParserOptions = {}): ParseResu
             warn(sourceLine, 'CALCULATION_OVERFLOW', 'Arc tessellation exceeded the supported Float32 range');
             Object.assign(state, blockStartState); status = 'INVALID'; stopped = true; break;
           }
-          vertices[i * 3] = point.x!;
-          vertices[i * 3 + 1] = point.y!;
-          vertices[i * 3 + 2] = point.z!;
+          vertices[i * 3] = referencePoint.x!;
+          vertices[i * 3 + 1] = referencePoint.y!;
+          vertices[i * 3 + 2] = referencePoint.z!;
         }
         if (stopped) break;
         totalArcVertices += arcVertexCount;
         state.position = end;
-        segments.push({ id: `line-${sourceLine}-segment-0`, sourceLine, ...(byLetter.has('N') ? { nBlock: String(byLetter.get('N')![0]) } : {}), rawCode, motion: state.motionMode, start, end, vertices, unit: state.unit, distanceMode: state.distanceMode, plane: state.plane, status: 'SUPPORTED', warningIds: [], ...(state.feed !== null ? { feed: state.feed } : {}), ...(state.spindle !== null ? { spindle: state.spindle } : {}), ...(state.tool !== null ? { tool: state.tool } : {}) });
+        segments.push({ id: `line-${sourceLine}-segment-0`, sourceLine, ...(byLetter.has('N') ? { nBlock: String(byLetter.get('N')![0]) } : {}), rawCode, motion: state.motionMode, start:referenceStart, end:referenceEnd, vertices, unit: state.unit, distanceMode: state.distanceMode, plane: state.plane, status: 'SUPPORTED', warningIds: [], ...(state.feed !== null ? { feed: state.feed } : {}), ...(state.spindle !== null ? { spindle: state.spindle } : {}), ...(state.tool !== null ? { tool: state.tool } : {}) });
         if (mWords.includes(2) || mWords.includes(30)) { programEndIndex = index; stopped = true; }
         continue;
       }
       state.position = end;
-      if (renderablePosition(start) && renderablePosition(end)) {
+      if (renderablePosition(referenceStart) && renderablePosition(referenceEnd)) {
         if (start.x !== end.x || start.y !== end.y || start.z !== end.z) {
-          segments.push({ id: `line-${sourceLine}-segment-0`, sourceLine, ...(byLetter.has('N') ? { nBlock: String(byLetter.get('N')![0]) } : {}), rawCode, motion: state.motionMode, start, end, unit: state.unit, distanceMode: state.distanceMode, plane: state.plane, status: 'SUPPORTED', warningIds: [], ...(state.feed !== null ? { feed: state.feed } : {}), ...(state.spindle !== null ? { spindle: state.spindle } : {}), ...(state.tool !== null ? { tool: state.tool } : {}) });
+          segments.push({ id: `line-${sourceLine}-segment-0`, sourceLine, ...(byLetter.has('N') ? { nBlock: String(byLetter.get('N')![0]) } : {}), rawCode, motion: state.motionMode, start:referenceStart, end:referenceEnd, unit: state.unit, distanceMode: state.distanceMode, plane: state.plane, status: 'SUPPORTED', warningIds: [], ...(state.feed !== null ? { feed: state.feed } : {}), ...(state.spindle !== null ? { spindle: state.spindle } : {}), ...(state.tool !== null ? { tool: state.tool } : {}) });
         }
       } else {
         warn(sourceLine, 'POSITION_UNKNOWN', 'Position is not fully known; no line segment was emitted');
