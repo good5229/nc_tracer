@@ -1,5 +1,6 @@
 import type {MotionSegment,ParseResult,ParserOptions} from '../parser/gcode';
 import type {StockComponent} from './stockComponents';
+import {threadHalfWidth,sweptThreadToolContains} from './threadToolGeometry';
 import {latheNoseOriginOffset} from '../parser/linuxcncLatheNose';
 
 /** Example stock in mm, with an axis along Z and uniform 0.2 mm cells. */
@@ -36,20 +37,6 @@ function sweptPolygon(a:Point,b:Point,local:Point[]):Point[]{
  lower.pop();upper.pop();return lower.concat(upper);
 }
 function sweptInsert(a:Point,b:Point,radius:number):Point[]{return sweptPolygon(a,b,[{x:-radius,z:0},{x:0,z:-radius},{x:2,z:1},{x:2,z:2}]);}
-/** Width of the rounded, tangent nose and straight flanks at a radial depth. */
-function threadHalfWidth(depth:number,halfAngle:number,tipRadius:number):number{
- if(tipRadius===0)return depth*Math.tan(halfAngle);
- const tangentDepth=tipRadius*(1-Math.sin(halfAngle));
- return depth<tangentDepth?Math.sqrt(Math.max(0,2*tipRadius*depth-depth*depth)):(depth+tipRadius*(1/Math.sin(halfAngle)-1))*Math.tan(halfAngle);
-}
-/** A circumscribed polygon prevents the rounded edge from being missed in rapid checks. */
-function threadSection(length:number,halfAngle:number,tipRadius:number):Point[]{
- const width=threadHalfWidth(length,halfAngle,tipRadius);
- if(tipRadius===0)return [{x:0,z:0},{x:length,z:-width},{x:length,z:width}];
- const points:Point[]=[{x:0,z:0},{x:length,z:width},{x:length,z:-width}],end=Math.PI/2-halfAngle,steps=12,delta=end/steps;
- for(let i=0;i<steps;i++){const mid=(i+.5)*delta,scale=tipRadius/Math.cos(delta/2),x=tipRadius-scale*Math.cos(mid),z=scale*Math.sin(mid);points.push({x,z},{x,z:-z});}
- return points;
-}
 function insideConvex(point:Point,polygon:Point[]):boolean{
  for(let i=0;i<polygon.length;i++){const a=polygon[i],b=polygon[(i+1)%polygon.length];if((b.x-a.x)*(point.z-a.z)-(b.z-a.z)*(point.x-a.x)<-1e-12)return false;}
  return polygon.length>=3;
@@ -110,10 +97,9 @@ export function simulateLatheStock(result:ParseResult,options:ParserOptions,mode
     // Real spindle rotation during these moves is machine-dependent.
     const fraction=((-t.spindleDirection*t.phaseTurnsStart)%1+1)%1;
     const angle=Math.min(angular-1,Math.floor(fraction*angular));
-    const polygon=sweptPolygon(a,b,threadSection(length,halfAngle,tipRadius));
     let otherPhaseContact=false;
     for(let z=0;z<nz;z++)for(let r=0;r<nr;r++){
-     if(!insideConvex({x:(r+.5)*step,z:zMin+(z+.5)*step},polygon))continue;
+     if(!sweptThreadToolContains({x:(r+.5)*step,z:zMin+(z+.5)*step},a,b,length,halfAngle,tipRadius))continue;
      if(remaining[index(r,z,angle)])return collision(`나사 공구의 급속 ${t.kind==='approach'?'진입':t.kind==='retract'?'이탈':'위치'} 이동이 예제 소재에 접촉해 계산을 중단했습니다.`,segment.sourceLine);
      if(!otherPhaseContact)for(let candidate=0;candidate<angular;candidate++)if(candidate!==angle&&remaining[index(r,z,candidate)]){otherPhaseContact=true;break;}
     }
@@ -127,11 +113,11 @@ export function simulateLatheStock(result:ParseResult,options:ParserOptions,mode
   // Ordinary turning first scans the X/Z section. Angular cells are only
   // visited when that section intersects the tool; charging every angle for
   // every empty section cell needlessly rejects fine threaded-stock grids.
-  work+=(points.length-1)*nr*nz*(threadTool?.tipRadius?28:model==='example-insert'||blade||threadTool?8:1);if(work>120_000_000)return {ok:false,message:'선반 형상 계산 범위를 초과했습니다.'};
-  for(let i=1;i<points.length;i++){const polygon=blade?sweptPolygon(points[i-1],points[i],[{x:0,z:-blade.width/2},{x:blade.length,z:-blade.width/2},{x:blade.length,z:blade.width/2},{x:0,z:blade.width/2}]):threadTool?sweptPolygon(points[i-1],points[i],threadSection(threadTool.length,(threadTool.includedAngleDegrees??60)*Math.PI/360,threadTool.tipRadius??0)):model==='example-insert'?sweptInsert(points[i-1],points[i],radius):[];
+  work+=(points.length-1)*nr*nz*(model==='example-insert'||blade||threadTool?8:1);if(work>120_000_000)return {ok:false,message:'선반 형상 계산 범위를 초과했습니다.'};
+  for(let i=1;i<points.length;i++){const polygon=blade?sweptPolygon(points[i-1],points[i],[{x:0,z:-blade.width/2},{x:blade.length,z:-blade.width/2},{x:blade.length,z:blade.width/2},{x:0,z:blade.width/2}]):!threadTool&&model==='example-insert'?sweptInsert(points[i-1],points[i],radius):[];
    for(let z=0;z<nz;z++)for(let r=0;r<nr;r++){
    const x=(r+.5)*step,pointZ=zMin+(z+.5)*step;
-   if((!blade&&!threadTool&&Math.min(distanceSquared({x,z:pointZ},points[i-1],points[i]),distanceSquared({x:-x,z:pointZ},points[i-1],points[i]))<=radius*radius) || (polygon.length>0 && (insideConvex({x,z:pointZ},polygon)||insideConvex({x:-x,z:pointZ},polygon)))){
+   if((threadTool&&[x,-x].some(radial=>sweptThreadToolContains({x:radial,z:pointZ},points[i-1],points[i],threadTool.length,(threadTool.includedAngleDegrees??60)*Math.PI/360,threadTool.tipRadius??0))) || (!blade&&!threadTool&&Math.min(distanceSquared({x,z:pointZ},points[i-1],points[i]),distanceSquared({x:-x,z:pointZ},points[i-1],points[i]))<=radius*radius) || (polygon.length>0 && (insideConvex({x,z:pointZ},polygon)||insideConvex({x:-x,z:pointZ},polygon)))){
     work+=angular;if(work>120_000_000)return {ok:false,message:'선반 형상 계산 범위를 초과했습니다.'};
     for(let angle=0;angle<angular;angle++){const cell=index(r,z,angle);if(!remaining[cell])continue;if(segment.motion==='G00')return collision('급속 이동 중 예제 공구와 소재가 접촉해 계산을 중단했습니다.',segment.sourceLine);remaining[cell]=0;removed++;}
    }
