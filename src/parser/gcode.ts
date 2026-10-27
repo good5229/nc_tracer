@@ -199,7 +199,7 @@ function parseCore(text: string, options: ParserOptions, originalSource = text):
   const pointReference = options.controllerProfile === 'linuxcnc' && (options.linuxcncPointToolReference === true || latheTools!==undefined);
   let loadedTool:number|null=null;
   const motionTool=()=>latheTools?loadedTool:state.tool;
-  let latheComp:{start:LatheNosePoint;side:'left'|'right';diameter:number;orientation:number;moves:LatheInputMove[];metadata:Map<number,{rawCode:string;feed:number|null;spindle:number|null;tool:number|null}>}|null=null;
+  let latheComp:{start:LatheNosePoint;side:'left'|'right';diameter:number;orientation:number;moves:LatheInputMove[];metadata:Map<number,{rawCode:string;feed:number|null;spindle:number|null;tool:number|null;distanceMode:ModalState['distanceMode']}>}|null=null;
   let pendingCompExit:LatheNosePoint|null=null;
   let latheRadiusMode = pointReference;
   const localOffset = {x:0,y:0,z:0};
@@ -246,7 +246,7 @@ function parseCore(text: string, options: ParserOptions, originalSource = text):
         vertices=new Float64Array((count+1)*3);
         for(let j=0;j<=count;j++){const angle=a0+sweep*j/count,point=toReference({x:j===count?move.end.x:move.center.x+radius*Math.sin(angle),y,z:j===count?move.end.z:move.center.z+radius*Math.cos(angle)});if(!renderablePosition(point)){warn(move.sourceLine,'FLOAT32_PRECISION_LOSS','공구 보정 원호가 표시 정밀도 범위를 벗어났습니다.');status='INVALID';return false;}vertices.set([point.x!,point.y!,point.z!],j*3);}
       }
-      prepared.push({id:`line-${move.sourceLine}-comp-${i}`,sourceLine:move.sourceLine,rawCode:metadata.rawCode,motion:move.motion,start,end,...(vertices?{vertices}:{}),unit:state.unit,distanceMode:state.distanceMode,plane:'XZ',status:'SUPPORTED',warningIds:[],...(metadata.feed!==null?{feed:metadata.feed}:{}),...(metadata.spindle!==null?{spindle:metadata.spindle}:{}),...(metadata.tool!==null?{tool:metadata.tool}:{})});
+      prepared.push({id:`line-${move.sourceLine}-comp-${i}`,sourceLine:move.sourceLine,rawCode:metadata.rawCode,motion:move.motion,start,end,...(vertices?{vertices}:{}),unit:state.unit,distanceMode:metadata.distanceMode,plane:'XZ',status:'SUPPORTED',warningIds:[],...(metadata.feed!==null?{feed:metadata.feed}:{}),...(metadata.spindle!==null?{spindle:metadata.spindle}:{}),...(metadata.tool!==null?{tool:metadata.tool}:{})});
     }
     segments.push(...prepared);totalArcVertices+=added;pendingCompExit={...calculated.moves.at(-1)!.end};return true;
   };
@@ -356,7 +356,7 @@ function parseCore(text: string, options: ParserOptions, originalSource = text):
     if (byLetter.has('S')) state.spindle = byLetter.get('S')![0];
     if (byLetter.has('T')) state.tool = byLetter.get('T')![0];
     if(latheTools){
-      if(latheComp && (mWords.length || gWords.some(g=>[17,19,20,21,43,49,90,91].includes(g)))){warn(sourceLine,'UNSUPPORTED_COMP_STATE_CHANGE','공구 보정 중 기계 또는 평면 변경은 지원하지 않습니다.');Object.assign(state,blockStartState);status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;}
+      if(latheComp && (mWords.length || gWords.some(g=>[17,19,20,21,43,49].includes(g)))){warn(sourceLine,'UNSUPPORTED_COMP_STATE_CHANGE','공구 보정 중 기계 또는 평면 변경은 지원하지 않습니다.');Object.assign(state,blockStartState);status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;}
       if(mWords.includes(6)){
         if(state.tool===null || !Number.isInteger(state.tool) || state.tool<0 || (state.tool!==0 && !latheTools.tools[String(state.tool)])){warn(sourceLine,'UNKNOWN_LATHE_TOOL','공구표에서 선택한 공구를 찾을 수 없습니다.');Object.assign(state,blockStartState);status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;}
         loadedTool=state.tool===0?null:state.tool;
@@ -429,7 +429,7 @@ function parseCore(text: string, options: ParserOptions, originalSource = text):
         if(anchorMoved){const start=toReference(state.position),end=toReference({...state.position,x:target.x,z:target.z});if(!renderablePosition(start)||!renderablePosition(end)){warn(sourceLine,'FLOAT32_PRECISION_LOSS','G70 시작 위치가 표시 정밀도 범위를 벗어났습니다.');status='INVALID';stopped=true;break;}segments.push({id:`line-${sourceLine}-cycle-anchor`,sourceLine,rawCode,motion:'G00',start,end,unit:state.unit,distanceMode:state.distanceMode,plane:'XZ',status:'SUPPORTED',warningIds:[],...(loadedTool!==null?{tool:loadedTool}:{})});}
         latheComp.start={...target};
         for(const move of cycleMoves)latheComp.moves.push(move.center?{motion:move.motion as 'G02'|'G03',end:move.end,center:move.center,sourceLine}:{motion:move.motion as 'G00'|'G01',end:move.end,sourceLine});
-        latheComp.metadata.set(sourceLine,{rawCode,feed:state.feed,spindle:state.spindle,tool:loadedTool});state.position={...state.position,x:result.finalPosition.x,z:result.finalPosition.z};state.motionMode=null;continue;
+        latheComp.metadata.set(sourceLine,{rawCode,feed:state.feed,spindle:state.spindle,tool:loadedTool,distanceMode:state.distanceMode});state.position={...state.position,x:result.finalPosition.x,z:result.finalPosition.z};state.motionMode=null;continue;
       }
       const prepared:MotionSegment[]=[];let addedVertices=0;
       for(const [index,move] of result.moves.entries()){
@@ -530,7 +530,7 @@ function parseCore(text: string, options: ParserOptions, originalSource = text):
           if(!arc){warn(sourceLine,'INVALID_ARC_GEOMETRY','공구 보정 원호의 중심을 확인할 수 없습니다.');Object.assign(state,blockStartState);status='INVALID';stopped=true;break;}
           latheComp.moves.push({motion:state.motionMode as 'G02'|'G03',end:endpoint,center:{z:arc.centerU,x:arc.centerV},sourceLine});
         }else latheComp.moves.push({motion:state.motionMode as 'G00'|'G01',end:endpoint,sourceLine});
-        latheComp.metadata.set(sourceLine,{rawCode,feed:state.feed,spindle:state.spindle,tool:loadedTool});state.position=end;continue;
+        latheComp.metadata.set(sourceLine,{rawCode,feed:state.feed,spindle:state.spindle,tool:loadedTool,distanceMode:state.distanceMode});state.position=end;continue;
       }
       if(pendingCompExit && arcMotion){warn(sourceLine,'G40_EXIT_MUST_BE_STRAIGHT','G40 이후 첫 이동은 직선이어야 합니다.');Object.assign(state,blockStartState);status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;}
       const exitPoint=pendingCompExit as LatheNosePoint|null;

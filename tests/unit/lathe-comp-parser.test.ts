@@ -14,6 +14,23 @@ describe('LinuxCNC explicit lathe compensation profile',()=>{
   expect(result.status).toBe('PARTIAL');expect(result.warnings.at(-1)?.code).toBe('ENTRY_TOO_SHORT');expect(result.segments).toHaveLength(1);
  });
 });
+it('resolves incremental moves during compensation while preserving the source mode',()=>{
+ const source=readFileSync(new URL('../fixtures/lathe_comp_arc.ngc',import.meta.url),'utf8');
+ const incremental=source.replace('G1 X4 Z0','G91 G1 Z-1').replace('G2 X6 Z-2 I2 K0','G2 X2 Z-2 I2 K0').replace('G1 X10 Z-2','G90 G1 X10 Z-2');
+ const baseline=parseGcode(source,settings),result=parseGcode(incremental,settings);
+ expect(result.status).toBe('SUPPORTED');expect(result.warnings).toEqual([]);
+ expect(result.segments.map(s=>[s.motion,s.start,s.end])).toEqual(baseline.segments.map(s=>[s.motion,s.start,s.end]));
+ expect(result.segments.find(s=>s.rawCode.includes('G2 X2'))?.distanceMode).toBe('incremental');
+});
+it('handles convex transitions into and out of a compensated arc',()=>{
+ const source=readFileSync(new URL('../fixtures/lathe_comp_arc_convex.ngc',import.meta.url),'utf8');
+ const result=parseGcode(source,settings);
+ expect(result.warnings).toEqual([]);expect(result.status).toBe('SUPPORTED');
+ expect(result.segments.filter(s=>s.vertices)).toHaveLength(3);
+ const expected=[['G00',10,1],['G01',3.7671,-.0027],['G02',3.6,-.2],['G02',5.8,-2.4],['G02',5.8485,-2.394],['G01',9.8485,-1.394],['G00',11,-1]] as const;
+ expect(result.segments).toHaveLength(expected.length);
+ result.segments.forEach((segment,i)=>{expect(segment.motion).toBe(expected[i][0]);expect(segment.end.x).toBeCloseTo(expected[i][1],4);expect(segment.end.z).toBeCloseTo(expected[i][2],4);});
+});
 it('uses the explicitly loaded tool table for G41 and rejects unknown offsets',()=>{
  const source=readFileSync(new URL('../fixtures/lathe_comp_left.ngc',import.meta.url),'utf8').replace('G41.1 D0.4 L2','T11 M6\nG43\nG41');
  const table={...settings,linuxcncLatheToolReference:{tools:{'11':{diameter:.4,orientation:2,offsetX:0,offsetZ:0}}}};

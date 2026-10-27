@@ -42,6 +42,17 @@ it('matches the LinuxCNC tangent line-to-arc and arc-to-line reference',()=>{
  const expected=reference.lathe_comp_arc.moves.slice(1,-1);expect(result.moves).toHaveLength(expected.length);
  result.moves.forEach((move,i)=>{const value=expected[i];expect(move.motion).toBe(value.motion);expect(move.end.x).toBeCloseTo(value.end[0],4);expect(move.end.z).toBeCloseTo(value.end[1],4);if('center'in value&&value.center){expect(move.center?.x).toBeCloseTo(value.center[0],4);expect(move.center?.z).toBeCloseTo(value.center[1],4);}});
 });
+it('matches LinuxCNC convex line/arc corner centers and endpoints',()=>{
+ const lines=[{end:{x:4,z:0},motion:'G01' as const,sourceLine:5},{end:{x:6,z:-2},center:{x:6,z:0},motion:'G02' as const,sourceLine:6},{end:{x:10,z:-1},motion:'G01' as const,sourceLine:7}];
+ const result=linuxCncLatheNoseLines({x:10,z:1},lines,.4,'left',2);expect(result.ok).toBe(true);if(!result.ok)return;
+ const arcs=result.moves.filter(move=>move.center);
+ const expected=[{end:[3.6,-.2],center:[3.8,-.2]},{end:[5.8,-2.4],center:[5.8,-.2]},{end:[5.8485,-2.394],center:[5.8,-2.2]}];
+ expect(arcs).toHaveLength(expected.length);arcs.forEach((arc,i)=>{expect(arc.end.x).toBeCloseTo(expected[i].end[0],4);expect(arc.end.z).toBeCloseTo(expected[i].end[1],4);expect(arc.center?.x).toBeCloseTo(expected[i].center[0],4);expect(arc.center?.z).toBeCloseTo(expected[i].center[1],4);});
+});
+it('fails closed for non-tangent arc corners outside the verified subset',()=>{
+ const lines=[{end:{x:4,z:0},motion:'G01' as const,sourceLine:5},{end:{x:6,z:-2},center:{x:6,z:0},motion:'G02' as const,sourceLine:6}];
+ expect(linuxCncLatheNoseLines({x:10,z:1},lines,.4,'right',2)).toMatchObject({ok:false,code:'UNSUPPORTED_ARC_CORNER'});
+});
 
 import {linuxCncLatheNoseCancel} from '../../src/parser/linuxcncLatheNose';
 it('uses the physical end point and programmed modal coordinates after G40',()=>{
