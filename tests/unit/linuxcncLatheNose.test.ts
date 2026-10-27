@@ -49,7 +49,7 @@ it('matches LinuxCNC convex line/arc corner centers and endpoints',()=>{
  const expected=[{end:[3.6,-.2],center:[3.8,-.2]},{end:[5.8,-2.4],center:[5.8,-.2]},{end:[5.8485,-2.394],center:[5.8,-2.2]}];
  expect(arcs).toHaveLength(expected.length);arcs.forEach((arc,i)=>{expect(arc.end.x).toBeCloseTo(expected[i].end[0],4);expect(arc.end.z).toBeCloseTo(expected[i].end[1],4);expect(arc.center?.x).toBeCloseTo(expected[i].center[0],4);expect(arc.center?.z).toBeCloseTo(expected[i].center[1],4);});
 });
-it('fails closed for non-tangent arc corners outside the verified subset',()=>{
+it('fails closed for concave arc corners outside the verified subset',()=>{
  const lines=[{end:{x:4,z:0},motion:'G01' as const,sourceLine:5},{end:{x:6,z:-2},center:{x:6,z:0},motion:'G02' as const,sourceLine:6}];
  expect(linuxCncLatheNoseLines({x:10,z:1},lines,.4,'right',2)).toMatchObject({ok:false,code:'UNSUPPORTED_ARC_CORNER'});
 });

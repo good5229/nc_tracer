@@ -31,6 +31,12 @@ it('handles convex transitions into and out of a compensated arc',()=>{
  expect(result.segments).toHaveLength(expected.length);
  result.segments.forEach((segment,i)=>{expect(segment.motion).toBe(expected[i][0]);expect(segment.end.x).toBeCloseTo(expected[i][1],4);expect(segment.end.z).toBeCloseTo(expected[i][2],4);});
 });
+it('matches the G42 convex arc reference',()=>{
+ const source=readFileSync(new URL('../fixtures/lathe_comp_arc_convex_right.ngc',import.meta.url),'utf8');const result=parseGcode(source,settings);
+ expect(result.warnings).toEqual([]);expect(result.status).toBe('SUPPORTED');
+ const expected=[['G00',-10,1],['G01',-4.1671,-.0027],['G03',-4,-.2],['G03',-6.2,-2.4],['G03',-6.2485,-2.394],['G01',-10.2485,-1.394],['G00',-11,-1]] as const;
+ expect(result.segments).toHaveLength(expected.length);result.segments.forEach((segment,i)=>{expect(segment.motion).toBe(expected[i][0]);expect(segment.end.x).toBeCloseTo(expected[i][1],4);expect(segment.end.z).toBeCloseTo(expected[i][2],4);});
+});
 it('uses the explicitly loaded tool table for G41 and rejects unknown offsets',()=>{
  const source=readFileSync(new URL('../fixtures/lathe_comp_left.ngc',import.meta.url),'utf8').replace('G41.1 D0.4 L2','T11 M6\nG43\nG41');
  const table={...settings,linuxcncLatheToolReference:{tools:{'11':{diameter:.4,orientation:2,offsetX:0,offsetZ:0}}}};

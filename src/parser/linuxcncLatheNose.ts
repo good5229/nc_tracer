@@ -77,7 +77,7 @@ export function linuxCncLatheNoseLines(start:LatheNosePoint,lines:LatheInputMove
   const tangent=tangentArc && Math.abs(turn)<=1e-12 && dot>0;
   if(tangent && Math.hypot(nextStart.x-center.x,nextStart.z-center.z)>1e-9)return error('UNRESOLVED_ARC_JUNCTION',line.sourceLine);
   if(tangentArc && !tangent && (dot<0 && Math.abs(turn)<=1e-12 || turn*sign>=0))return error('UNSUPPORTED_ARC_CORNER',line.sourceLine);
-  if(tangentArc && !tangent && (side!=='left' || previousArc && isArc || line.motion==='G00'))return error('UNSUPPORTED_ARC_CORNER',line.sourceLine);
+  if(tangentArc && !tangent && (previousArc && isArc || line.motion==='G00'))return error('UNSUPPORTED_ARC_CORNER',line.sourceLine);
   if(!tangent && turn!==0 && (cornerAngle<=0.01 || Math.PI-cornerAngle<=0.01))return error('UNSUPPORTED_CORNER_TOLERANCE',line.sourceLine);
   if(!tangentArc && turn!==0 && turn*sign>0){
    const delta=sub(nextStart,center),t=cross(delta,v)/turn,s=cross(delta,u)/turn;
