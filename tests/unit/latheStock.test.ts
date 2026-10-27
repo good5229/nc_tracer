@@ -114,7 +114,7 @@ it('calculates the complete original G76 point-table path with separately assume
  const parsed=parseGcode(source,pointOptions);expect(parsed.status).toBe('SUPPORTED');expect(parsed.segments.some(s=>s.thread?.kind==='thread-cut')).toBe(true);
  const tools=Object.fromEntries([1,4,9].map(n=>[String(n),{diameter:.4,orientation:2,offsetX:0,offsetZ:0}]));
  const grid={radius:3.175,zMin:-16.6,zMax:0,step:.2,radialCells:16,axialCells:83,angularSegments:24};
- const shape=simulateLatheStock(parsed,{...pointOptions,linuxcncLatheToolReference:{tools}},'round-nose',grid,false,{'9':{width:1,length:2}});
+ const shape=simulateLatheStock(parsed,{...pointOptions,linuxcncLatheToolReference:{tools}},'round-nose',grid,false,{'9':{width:1,length:2}},{'4':{length:2}});
  if(!shape.ok)throw new Error(shape.message);expect(shape.angularCells).toBe(24);expect(shape.removed).toBeGreaterThan(0);expect(shape.remaining.some(v=>v===1)).toBe(true);
  let mixedRings=0;for(let i=0;i<shape.remaining.length;i+=24){const ring=shape.remaining.slice(i,i+24);if(ring.some(v=>v===0)&&ring.some(v=>v===1))mixedRings++;}expect(mixedRings).toBeGreaterThan(0);
 });
@@ -128,4 +128,19 @@ it('sweeps a distinct parting blade across its stated width, including rapid col
  const unsafe=parseGcode(program.replace('G0 Z-3','G0 X8 Z-3'),setup);
  expect(simulateLatheStock(unsafe,setup,'round-nose',undefined,false,{'9':{width:1,length:2}})).toMatchObject({ok:false,message:expect.stringContaining('급속')});
  expect(simulateLatheStock(parsed,setup,'round-nose',undefined,false,{'9':{width:0,length:2}})).toMatchObject({ok:false,message:expect.stringContaining('폭')});
+});
+it('uses the sharp threading insert outside the synchronized cycle as well',()=>{
+ const setup={...options,initialPosition:{x:12,y:0,z:1},linuxcncLatheToolReference:{tools:{'4':{diameter:.4,orientation:2,offsetX:0,offsetZ:0}}}};
+ const parsed=parseGcode('G21 G90 G18 G8\nT4 M6\nG0 X12 Z0\nG0 Z-3\nG1 X8 F100\nG0 X12\nM2',setup);expect(parsed.status).toBe('SUPPORTED');
+ const sharp=simulateLatheStock(parsed,setup,'round-nose',undefined,false,{}, {'4':{length:2}}),round=simulateLatheStock(parsed,setup);
+ if(!sharp.ok)throw new Error(sharp.message);if(!round.ok)throw new Error(round.message);
+ expect(sharp.remaining[18*50+47]).toBe(0);expect(round.remaining[18*50+47]).toBe(1);
+ expect(simulateLatheStock(parsed,setup,'round-nose',undefined,false,{}, {'4':{length:0}})).toMatchObject({ok:false,message:expect.stringContaining('나사 공구')});
+});
+it('uses the threading insert length during synchronized cutting',()=>{
+ const code='G21 G90 G18 G8\nT1 M6\nG0 X12 Z0\nS500 M3\nG0 X11\nG76 P1.2 Z-5.5 I-1 J.2 K1 R1\nG0 X12\nM2';
+ const parsed=parseGcode(code,{...options,initialPosition:{x:12,y:0,z:1}});
+ const setup={...options,initialPosition:{x:12,y:0,z:1}};
+ const full=simulateLatheStock(parsed,setup,'round-nose',undefined,false,{}, {'1':{length:2}}),short=simulateLatheStock(parsed,setup,'round-nose',undefined,false,{}, {'1':{length:.3}});
+ if(!full.ok)throw new Error(full.message);if(!short.ok)throw new Error(short.message);expect(full.removed).toBeGreaterThan(short.removed);
 });
