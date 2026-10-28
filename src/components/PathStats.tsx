@@ -16,6 +16,7 @@ export interface PathStatsProps {
   filters: PathFilters;
   onFiltersChange: (filters: PathFilters) => void;
   className?: string;
+  unitLabel?: string;
 }
 
 interface Aggregate {
@@ -28,6 +29,7 @@ const isFinitePoint = (point: Vector3): point is { x: number; y: number; z: numb
   Number.isFinite(point.x) && Number.isFinite(point.y) && Number.isFinite(point.z);
 
 function moveDistance(segment: MotionSegment): number | null {
+  if (segment.drillSpan) return null;
   if (segment.vertices) {
     const vertices = segment.vertices;
     if (vertices.length < 6 || vertices.length % 3 !== 0) return null;
@@ -77,7 +79,7 @@ const formatDistance = (distance: number) => distance.toLocaleString(undefined, 
  * Filters and summarizes source motion blocks. Arc distance uses the parser's tessellated
  * vertices, while playback and counts remain one item per original motion block.
  */
-export default function PathStats({ segments, filters, onFiltersChange, className }: PathStatsProps) {
+export default function PathStats({ segments, filters, onFiltersChange, className, unitLabel = 'mm' }: PathStatsProps) {
   const stats = useMemo(() => {
     const selected = filterPathSegments(segments, filters);
     const total = emptyAggregate();
@@ -138,14 +140,14 @@ export default function PathStats({ segments, filters, onFiltersChange, classNam
 
       <div className="path-stats__summary" aria-live="polite">
         <strong>{stats.total.count.toLocaleString()}개 이동 블록</strong>
-        <span>이동 거리 <b>{formatDistance(stats.total.distanceMm)} mm</b></span>
+        <span>이동 거리 <b>{formatDistance(stats.total.distanceMm)} {unitLabel}</b></span>
         {stats.total.unmeasured > 0 && <span>{stats.total.unmeasured.toLocaleString()}개 블록은 좌표가 불완전해 거리를 계산하지 않았습니다.</span>}
       </div>
 
       <div className="path-stats__tables">
         <table>
           <caption>이동 유형별 통계</caption>
-          <thead><tr><th scope="col">유형</th><th scope="col">블록 수</th><th scope="col">거리 (mm)</th></tr></thead>
+          <thead><tr><th scope="col">유형</th><th scope="col">블록 수</th><th scope="col">거리 ({unitLabel})</th></tr></thead>
           <tbody>{PATH_MOTIONS.map((motion) => {
             const aggregate = stats.byMotion.get(motion)!;
             return <tr key={motion}><th scope="row">{motion}</th><td>{aggregate.count.toLocaleString()}</td><td>{formatDistance(aggregate.distanceMm)}</td></tr>;
@@ -153,7 +155,7 @@ export default function PathStats({ segments, filters, onFiltersChange, classNam
         </table>
         <table>
           <caption>공구별 통계</caption>
-          <thead><tr><th scope="col">공구</th><th scope="col">블록 수</th><th scope="col">거리 (mm)</th></tr></thead>
+          <thead><tr><th scope="col">공구</th><th scope="col">블록 수</th><th scope="col">거리 ({unitLabel})</th></tr></thead>
           <tbody>{toolOptions.map((tool) => {
             const aggregate = stats.byTool.get(tool) ?? emptyAggregate();
             return <tr key={toolKey(tool)}><th scope="row">{toolName(tool)}</th><td>{aggregate.count.toLocaleString()}</td><td>{formatDistance(aggregate.distanceMm)}</td></tr>;

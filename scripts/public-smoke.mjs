@@ -11,7 +11,7 @@ for (const channel of ['chrome', 'msedge']) {
   await page.locator('.topbar input[type=file]').setInputFiles({name:'synthetic.nc',mimeType:'text/plain',buffer:Buffer.from('G21 G90 G00 X0 Y0 Z0\nG01 X10\nG01 Y20\nM30')});
   await page.getByRole('button',{name:/G01 X10/}).click();
   await page.waitForFunction(()=>document.querySelector('.metrics')?.textContent?.includes('X 10'),null,{timeout:15000});
-  const canvas=page.locator('.viewport canvas');
+  const canvas=page.locator('.viewport > div:first-child canvas');
   if (!(await canvas.isVisible())) throw new Error(`${channel}: no 3D canvas`);
   const first=await canvas.screenshot();
   await page.getByRole('button',{name:'다음 블록'}).click();

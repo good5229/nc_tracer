@@ -34,6 +34,7 @@ export interface Viewer3DProps {
   /** Reports progressive large-path rendering so playback can pause during rasterization. */
   onRenderingChange?: (rendering: boolean) => void;
   className?: string;
+  unitLabel?: string;
   style?: React.CSSProperties;
 }
 
@@ -56,6 +57,7 @@ export default function Viewer3D({
   progressSegmentId = selectedSegmentId,
   onRenderingChange,
   className,
+  unitLabel = 'mm',
   style,
 }: Viewer3DProps) {
   const hostRef = useRef<HTMLDivElement>(null);
@@ -627,7 +629,7 @@ export default function Viewer3D({
       <div ref={hostRef} style={{ position: 'relative', flex: 1, minHeight: 200, cursor: 'crosshair' }}>
         {segments.length === 0 && <div style={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center', color: '#9ca3af', pointerEvents: 'none', font: '14px system-ui, sans-serif' }}>표시할 경로가 없습니다</div>}
       </div>
-      <div style={{ padding: '4px 10px 8px', color: '#9ca3af', font: '11px system-ui, sans-serif' }}>XYZ 단위: mm · 실제 가공 형상이나 충돌 검증 결과가 아닌 프로그램 경로입니다.{renderingLargePath && ' · 경로를 나누어 그리는 중…'}</div>
+      <div style={{ padding: '4px 10px 8px', color: '#9ca3af', font: '11px system-ui, sans-serif' }}>XYZ 단위: {unitLabel} · 실제 가공 형상이나 충돌 검증 결과가 아닌 프로그램 경로입니다.{renderingLargePath && ' · 경로를 나누어 그리는 중…'}</div>
     </div>
   );
 }

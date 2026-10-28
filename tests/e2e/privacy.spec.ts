@@ -54,7 +54,7 @@ test('local production build works with external requests blocked', async ({page
  await page.goto('/nc_tracer/');
  await page.getByRole('button',{name:'예제 불러오기'}).click();
  await expect(page.locator('.metrics')).toContainText('행 4');
- await expect(page.locator('.viewport canvas')).toBeVisible();
+ await expect(page.locator('.viewport > div:first-child canvas')).toBeVisible();
 });
 
 test('drop and comparison do not transmit file data', async ({page}) => {

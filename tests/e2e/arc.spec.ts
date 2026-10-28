@@ -11,7 +11,7 @@ test('full-circle arc stays one playback block and canvas selection maps to its 
 
   const metrics = page.locator('.metrics');
   const counter = page.locator('.counter');
-  const canvas = page.locator('.viewport canvas');
+  const canvas = page.locator('.viewport > div:first-child canvas');
   await expect(canvas).toBeVisible();
   await expect(metrics).toContainText('G02 · 행 2');
   await expect(counter).toHaveText('1 / 2');
@@ -37,7 +37,7 @@ test('full-circle arc stays one playback block and canvas selection maps to its 
   // Project a known point on the full circle into the fitted canvas, then click the rendered curve.
   // The circle center is (0, 0), radius 10, and the selected point is (0, -10, 0).
   const clickPoint = await page.evaluate(() => {
-    const canvasElement = document.querySelector<HTMLCanvasElement>('.viewport canvas');
+    const canvasElement = document.querySelector<HTMLCanvasElement>('.viewport > div:first-child canvas');
     if (!canvasElement) throw new Error('3D canvas was not mounted');
     const rect = canvasElement.getBoundingClientRect();
     const span = Math.sqrt(30 * 30 + 20 * 20);
@@ -75,7 +75,7 @@ test('filtered current motion keeps earlier visible progress', async ({page}) =>
  await expect(page.locator('.counter')).toHaveText('2 / 3');
  await page.getByRole('region',{name:'경로 필터 및 통계'}).getByLabel('G00').uncheck();
  await expect(page.locator('.counter')).toHaveText('2 / 3');
- const canvas=page.locator('.viewport canvas');
+ const canvas=page.locator('.viewport > div:first-child canvas');
  const afterFilter=await canvas.screenshot();
  await page.getByRole('button',{name:'이전 블록'}).click();
  await expect(page.locator('.counter')).toHaveText('1 / 3');
@@ -87,7 +87,7 @@ test('line width and point density change the canvas', async ({page}) => {
  await page.goto('/nc_tracer/');
  await page.getByRole('button',{name:'예제 불러오기'}).click();
  await expect(page.locator('.counter')).toHaveText('1 / 6');
- const canvas=page.locator('.viewport canvas');
+ const canvas=page.locator('.viewport > div:first-child canvas');
  const thin=await canvas.screenshot();
  await page.getByLabel('선 두께').fill('8');
  await expect(page.getByText('8px',{exact:true})).toBeVisible();
@@ -129,7 +129,7 @@ test('viewer visibility choices survive path filter rebuilds', async ({page}) =>
  await expect(page.locator('.counter')).toHaveText('1 / 2');
  const rapid=page.getByLabel('G00 급속',{exact:true});
  await rapid.uncheck();
- const canvas=page.locator('.viewport canvas');
+ const canvas=page.locator('.viewport > div:first-child canvas');
  await page.getByRole('region',{name:'경로 필터 및 통계'}).getByLabel('G02').uncheck();
  await expect(rapid).not.toBeChecked();
  await page.evaluate(()=>new Promise<void>(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve()))));
@@ -155,9 +155,9 @@ test('replacing an interrupted large drawing restores the selection highlight', 
   await fresh.locator('.topbar input[type=file]').setInputFiles(small);
   await expect(page.locator('.counter')).toHaveText('1 / 2');
   await expect(fresh.locator('.counter')).toHaveText('1 / 2');
-  await page.locator('.viewport canvas').screenshot();
-  await fresh.locator('.viewport canvas').screenshot();
-  const yellowPixels=async (p:typeof page) => p.locator('.viewport canvas').evaluate((canvas:HTMLCanvasElement) => {
+  await page.locator('.viewport > div:first-child canvas').screenshot();
+  await fresh.locator('.viewport > div:first-child canvas').screenshot();
+  const yellowPixels=async (p:typeof page) => p.locator('.viewport > div:first-child canvas').evaluate((canvas:HTMLCanvasElement) => {
    const gl=canvas.getContext('webgl2') ?? canvas.getContext('webgl'); if(!gl) return 0;
    const pixels=new Uint8Array(canvas.width*canvas.height*4);gl.readPixels(0,0,canvas.width,canvas.height,gl.RGBA,gl.UNSIGNED_BYTE,pixels);let count=0;
    for(let i=0;i<pixels.length;i+=4) if(pixels[i]>180 && pixels[i+1]>160 && pixels[i+2]<140) count++;
