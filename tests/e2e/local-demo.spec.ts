@@ -121,8 +121,10 @@ test('identifies a drilling depth range as incomplete rather than a complete cyc
  await page.goto('/nc_tracer/');
  await page.getByLabel('컨트롤러 프로파일').selectOption('fanuc');
  await page.locator('.topbar input[type=file]').setInputFiles({name:'drill.nc',mimeType:'text/plain',buffer:Buffer.from('G54\nG90 G17 G0 X1 Y2 Z5\nG94 G83 G98 Z-4 R1 Q2\nG80')});
- await expect(page.locator('.counter')).toHaveText('1 / 1');
- await expect(page.locator('.metrics')).toContainText('G83 깊이 범위 (왕복 생략)');
+ await expect(page.locator('.counter')).toHaveText('1 / 4');
+ await expect(page.locator('.metrics')).toContainText('G83 R면 접근');
+ await page.getByRole('button',{name:'다음 블록'}).click();
+ await expect(page.locator('.metrics')).toContainText('G83 깊이 범위 (중간 왕복 생략)');
  await expect(page.getByRole('region',{name:'해석 진단'})).toContainText('반복 이송·후퇴');
 });
 

@@ -97,15 +97,29 @@ describe('bounded FANUC work-coordinate preview',()=>{
   expect(r.segments.map(s=>s.sourceLine)).toEqual([3,8]);expect(r.segments[1].start).toEqual({x:4,y:5,z:6});
   expect(r.warnings.some(w=>w.code==='UNCERTAIN_FANUC_CYCLE')).toBe(true);
  });
- it('shows only the programmed G83 depth range at each known absolute hole',()=>{
+ it('shows the G83 depth range and known approach and final return at each hole',()=>{
   const r=parseGcode('G54\nG90 G17 G0 X1 Y2 Z5\nG94 G83 G98 Z-4 R1 Q2\nX3 Y4\nG80\nG90 G0 X10 Y10 Z5\nG1 X11',fanuc);
   const spans=r.segments.filter(s=>s.drillSpan);
   expect(spans.map(s=>[s.sourceLine,s.start,s.end])).toEqual([
+   [3,{x:1,y:2,z:5},{x:1,y:2,z:1}],
    [3,{x:1,y:2,z:1},{x:1,y:2,z:-4}],
+   [3,{x:1,y:2,z:-4},{x:1,y:2,z:1}],
+   [3,{x:1,y:2,z:1},{x:1,y:2,z:5}],
+   [4,{x:3,y:4,z:5},{x:3,y:4,z:1}],
    [4,{x:3,y:4,z:1},{x:3,y:4,z:-4}],
+   [4,{x:3,y:4,z:-4},{x:3,y:4,z:1}],
+   [4,{x:3,y:4,z:1},{x:3,y:4,z:5}],
   ]);
   expect(spans.every(s=>s.status==='PARTIAL' && s.warningIds.length>0)).toBe(true);
   expect(r.segments.at(-1)?.sourceLine).toBe(7);
+ });
+ it('does not invent G83 intermediate re-entry or G98 height when unknown',()=>{
+  const r=parseGcode('G54\nG90 G17 G0 X1 Y2 Z5\nG83 G99 Z-4 R1 Q2\nX3 Y4\nG80',fanuc);
+  const a=r.segments.filter(s=>s.sourceLine===3),b=r.segments.filter(s=>s.sourceLine===4);
+  expect(a.map(s=>s.drillPhase??'depth')).toEqual(['approach','depth','return']);
+  expect(b.map(s=>s.drillPhase??'depth')).toEqual(['depth','return']);
+  expect(a.every(s=>s.status==='PARTIAL')).toBe(true);
+  expect(r.warnings.find(w=>w.sourceLine===3)?.message).toContain('반복 이송·후퇴');
  });
  it('shows G84 tapping depth at each known programmed hole after M29',()=>{
   const r=parseGcode('G54\nG90 G17 G0 X1 Y2 Z5\nM29 S100\nG94 G84 G98 Z-4 R1 F40\nX3 Y4\nG80',fanuc);
@@ -160,7 +174,7 @@ describe('bounded FANUC work-coordinate preview',()=>{
  });
  it('does not repeat a G83 depth range for a feed-only block',()=>{
   const r=parseGcode('G54\nG90 G17 G0 X1 Y2 Z5\nG83 Z-4 R1 Q2 F40\nF50\nX3\nG80',fanuc);
-  expect(r.segments.filter(s=>s.drillSpan==='G83').map(s=>s.sourceLine)).toEqual([3,5]);
+  expect([...new Set(r.segments.filter(s=>s.drillSpan==='G83').map(s=>s.sourceLine))]).toEqual([3,5]);
  });
  it('waits for coordinates after a standalone G84 or G83 selection',()=>{
   const r=parseGcode('G54\nG90 G17 G0 X1 Y2 Z5\nM29 S100\nG94 G98 G84 F40\nF50\nZ-4 R1 Q2\nG80',fanuc);
@@ -169,7 +183,7 @@ describe('bounded FANUC work-coordinate preview',()=>{
   expect(moves[0]).toMatchObject({tapPhase:'approach',start:{x:1,y:2,z:5},end:{x:1,y:2,z:1},tappingPitch:0.5});
   expect(moves.at(-1)?.tapPhase).toBe('clearance');
   const drill=parseGcode('G54\nG90 G17 G0 X1 Y2 Z5\nG83\nZ-4 R1 Q2\nG80',fanuc);
-  expect(drill.segments.filter(s=>s.drillSpan==='G83').map(s=>s.sourceLine)).toEqual([4]);
+  expect([...new Set(drill.segments.filter(s=>s.drillSpan==='G83').map(s=>s.sourceLine))]).toEqual([4]);
   const cancel=parseGcode('G54\nG90 G17 G0 X1 Y2 Z5\nG84\nG80\nG90 G0 X2 Y3 Z4\nG1 X5',fanuc);
   expect(cancel.segments.map(s=>s.sourceLine)).toEqual([6]);
  });
