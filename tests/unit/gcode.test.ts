@@ -315,6 +315,15 @@ describe('parseGcode', () => {
     expect(result.warnings).toHaveLength(0);
   });
 
+  it('ignores standalone sequence numbers after program end but still reports later commands', () => {
+    const header='G21 G90 G00 X0 Y0 Z0\nM30\nN101\nN102 (번호만 있는 행)\n';
+    const labels=parseGcode(header, {initialPosition: origin});
+    expect(labels.status).toBe('SUPPORTED');
+    expect(labels.warnings).toEqual([]);
+    const command=parseGcode(header+'N103 G01 X1', {initialPosition: origin});
+    expect(command.warnings).toContainEqual(expect.objectContaining({sourceLine:5,code:'CODE_AFTER_PROGRAM_END'}));
+  });
+
   it('marks an unknown modal move as partial and does not invent a position', () => {
     const result = parseGcode('X10 Y20 Z30');
     expect(result.status).toBe('UNSUPPORTED');

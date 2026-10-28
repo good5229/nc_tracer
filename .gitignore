@@ -18,3 +18,6 @@ samples/
 !demo/useful-subroutines.ngc
 !demo/lathe_g70_71_demo.ngc
 !demo/lathe-g76.ngc
+
+# Company-supplied demos may also have no file extension.
+/demo/hangyul_demo/

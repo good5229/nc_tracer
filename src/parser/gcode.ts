@@ -8,7 +8,7 @@ export type ValidationStatus = 'SUPPORTED' | 'PARTIAL' | 'UNSUPPORTED' | 'INVALI
 export type Vector3 = { x: number | null; y: number | null; z: number | null };
 export type Motion = 'G00' | 'G01' | 'G02' | 'G03';
 export type ModalState = {
-  unit: 'mm' | 'inch' | null;
+  unit: 'mm' | 'inch' | 'native' | null;
   distanceMode: 'absolute' | 'incremental' | null;
   motionMode: Motion | null;
   plane: 'XY' | 'XZ' | 'YZ' | null;
@@ -31,6 +31,19 @@ export type MotionSegment = {
   feed?: number;
   spindle?: number;
   tool?: number;
+  workFrame?: number;
+  rotaryGroup?: number;
+  /** H number commanded by G43; this is not the tool length value. */
+  toolLengthOffset?: number;
+  /** Whether this segment was transformed by the optional Euler preview. */
+  eulerTransformed?: boolean;
+  /** Programmed drilling depth range, not the complete canned-cycle motion. */
+  drillSpan?: 'G83' | 'G84';
+  /** Programmed feed-per-minute / spindle speed, not a measured thread pitch. */
+  tappingPitch?: number;
+  /** Direction of the simple no-Q tapping preview. */
+  tapPhase?: 'approach' | 'in' | 'out' | 'clearance';
+  tapPeck?: {index:number;total:number};
   thread?: {kind:ThreadMoveKind;synchronized:boolean;pitch:number;phaseOriginZ:number;phaseTurnsStart:number;phaseTurnsEnd:number;axialDirection:1|-1;spindleDirection:1|-1;external:boolean;indexOffsetDegrees:number};
   unit: ModalState['unit'];
   distanceMode: ModalState['distanceMode'];
@@ -43,9 +56,13 @@ export type ParseResult = {
   segments: MotionSegment[];
   warnings: ParseWarning[];
   finalState: ModalState;
+  /** Rotary words that started a group, not measured axis positions. */
+  rotaryCommands?: Record<number,{sourceLine:number;command:string;mode:'absolute'|'incremental'|'unknown'}>;
 };
 export type ParserOptions = {
-  controllerProfile?: 'generic' | 'linuxcnc';
+  controllerProfile?: 'generic' | 'linuxcnc' | 'fanuc';
+  /** Optional FANUC G68.2 Euler coordinate preview, not machine kinematics. */
+  fanucEulerPreview?: boolean;
   /** Explicit synthetic reference setup: zero-offset G54, zero-diameter/length tools, stationary M6, G8. */
   linuxcncPointToolReference?: boolean;
   /** Explicit machine-mm tool table; tool length offsets must be zero in this profile. */
@@ -71,7 +88,7 @@ const FLOAT32_MAX_OFFSET_MM = 0.01;
 const normalizeAngle = (angle: number) => ((angle % TAU) + TAU) % TAU;
 
 function solveArc(start: Vector3, end: Vector3, plane: NonNullable<ModalState['plane']>, clockwise: boolean,
-  byLetter: Map<string, number[]>, scale: number) {
+  byLetter: Map<string, number[]>, scale: number, previewTolerance = 0) {
   const axes = planeAxes[plane];
   const su = start[axes.u]!, sv = start[axes.v]!, eu = end[axes.u]!, ev = end[axes.v]!;
   const hasR = byLetter.has('R');
@@ -105,10 +122,11 @@ function solveArc(start: Vector3, end: Vector3, plane: NonNullable<ModalState['p
   const centerU = su + (byLetter.get(axes.cu)?.[0] ?? 0) * scale;
   const centerV = sv + (byLetter.get(axes.cv)?.[0] ?? 0) * scale;
   const r0 = Math.hypot(su - centerU, sv - centerV), r1 = Math.hypot(eu - centerU, ev - centerV);
-  if (!(r0 > 0) || Math.abs(r0 - r1) > Math.max(1e-6, r0 * 1e-6)) return null;
+  const exactTolerance = Math.max(1e-6, r0 * 1e-6);
+  if (!(r0 > 0) || !(r1 > 0) || Math.abs(r0 - r1) > Math.max(exactTolerance, previewTolerance)) return null;
   const a0 = Math.atan2(sv - centerV, su - centerU), a1 = Math.atan2(ev - centerV, eu - centerU);
   const fullCircle = su === eu && sv === ev;
-  return { centerU, centerV, radius: r0, sweep: fullCircle ? (clockwise ? -TAU : TAU) : clockwise ? -normalizeAngle(a0 - a1) : normalizeAngle(a1 - a0), axes };
+  return { centerU, centerV, radius: r0, endRadius: r1, approximate: Math.abs(r0-r1)>exactTolerance, sweep: fullCircle ? (clockwise ? -TAU : TAU) : clockwise ? -normalizeAngle(a0 - a1) : normalizeAngle(a1 - a0), axes };
 }
 
 const unknownPosition = (): Vector3 => ({ x: null, y: null, z: null });
@@ -183,7 +201,7 @@ function parseCore(text: string, options: ParserOptions, originalSource = text):
   const segments: MotionSegment[] = [];
   const warnings: ParseWarning[] = [];
   const state: ModalState = {
-    unit: options.initialUnit ?? null,
+    unit: options.initialUnit ?? (options.controllerProfile==='fanuc' ? 'native' : null),
     distanceMode: options.initialDistanceMode ?? null,
     motionMode: options.initialMotionMode ?? null,
     plane: null,
@@ -205,8 +223,28 @@ function parseCore(text: string, options: ParserOptions, originalSource = text):
   let pendingCompExit:LatheNosePoint|null=null;
   let latheRadiusMode = pointReference;
   const localOffset = {x:0,y:0,z:0};
-  const toReference = (p:Vector3):Vector3 => ({x:p.x === null ? null : p.x+localOffset.x, y:p.y === null ? null : p.y+localOffset.y, z:p.z === null ? null : p.z+localOffset.z});
+  let fanucTilt:{origin:{x:number;y:number;z:number};angles:{i:number;j:number;k:number}}|null=null;
+  const toReference = (p:Vector3):Vector3 => {
+    if(fanucTilt && p.x!==null && p.y!==null && p.z!==null){
+      const {origin,angles}=fanucTilt;
+      const rad=Math.PI/180, a=angles.i*rad,b=angles.j*rad,c=angles.k*rad;
+      const x1=Math.cos(c)*p.x-Math.sin(c)*p.y, y1=Math.sin(c)*p.x+Math.cos(c)*p.y;
+      const y2=Math.cos(b)*y1-Math.sin(b)*p.z,z2=Math.sin(b)*y1+Math.cos(b)*p.z;
+      return {x:origin.x+Math.cos(a)*x1-Math.sin(a)*y2,y:origin.y+Math.sin(a)*x1+Math.cos(a)*y2,z:origin.z+z2};
+    }
+    return {x:p.x === null ? null : p.x+localOffset.x, y:p.y === null ? null : p.y+localOffset.y, z:p.z === null ? null : p.z+localOffset.z};
+  };
   let programEndIndex: number | null = null;
+  let fanucWorkFrame:number | null = null;
+  let fanucToolLengthOffset:number | null=null;
+  let fanucRotaryGroup=0;
+  const rotaryCommands:NonNullable<ParseResult['rotaryCommands']>={};
+  let fanucUnknownCycle=false;
+  let fanucFeedPerMinute=false;
+  let pendingTapPosition:Vector3|null=null;
+  let pendingFanucCycle:'G83'|'G84'|null=null;
+  let fanucReturnMode:'initial'|'r'|null=null;
+  const fanucDrill:{active:{kind:'G83'|'G84';r:number;z:number;q?:number;initialZ:number|null;lastReturnZ:number|null} | null}={active:null};
   const warn = (sourceLine: number, code: string, message: string) => {
     const id = `warning-${sourceLine}-${warnings.length}`;
     warnings.push({ id, sourceLine, code, message });
@@ -269,6 +307,8 @@ function parseCore(text: string, options: ParserOptions, originalSource = text):
       status = 'INVALID'; stopped = true; break;
     }
     if (tokens.length === 0) continue;
+    // A standalone FANUC O-number names a program; it is not a motion or call.
+    if (options.controllerProfile === 'fanuc' && tokens.length === 1 && tokens[0].letter === 'O' && /^\d+$/.test(tokens[0].raw)) continue;
 
     const byLetter = new Map<string, number[]>();
     for (const token of tokens) byLetter.set(token.letter, [...(byLetter.get(token.letter) ?? []), token.value]);
@@ -282,6 +322,102 @@ function parseCore(text: string, options: ParserOptions, originalSource = text):
       warn(sourceLine, 'DUPLICATE_MODAL_WORD', 'Duplicate G or M word'); status = 'INVALID'; stopped = true; break;
     }
     const linuxcnc = options.controllerProfile === 'linuxcnc';
+    const fanuc = options.controllerProfile === 'fanuc';
+    if(fanuc && gWords.includes(94))fanucFeedPerMinute=true;
+    if(fanuc && gWords.includes(98)!==gWords.includes(99))fanucReturnMode=gWords.includes(98)?'initial':'r';
+    const tapModalOnly=fanuc && tokens.every(t=>['N','G','F'].includes(t.letter)) && gWords.every(g=>[94,98,99].includes(g)) && !(gWords.includes(98)&&gWords.includes(99));
+    if(fanuc && pendingTapPosition && !gWords.includes(84) && !mWords.includes(29) && !tapModalOnly && !pendingFanucCycle)pendingTapPosition=null;
+    if(fanuc && (fanucDrill.active || pendingFanucCycle || fanucUnknownCycle) && !gWords.some(g=>[80,83,84].includes(g)) && gWords.some(g=>[0,1,2,3].includes(g))){
+      if(fanucDrill.active?.kind==='G84' || pendingFanucCycle==='G84' || fanucUnknownCycle)state.spindle=null;
+      fanucDrill.active=null;pendingFanucCycle=null;fanucUnknownCycle=false;pendingTapPosition=null;
+      state.position=unknownPosition();state.motionMode=null;
+      warn(sourceLine,'UNCERTAIN_CYCLE_END','? 이동 지령으로 사이클을 해제합니다. 직전 사이클 종료 위치를 확인할 수 없어 해당 이동은 연결하지 않습니다.');status='PARTIAL';
+    }
+    if(fanuc && (gWords.includes(83) || gWords.includes(84) || fanucDrill.active || pendingFanucCycle)){
+      // A modal-only block changes settings but does not drill another hole.
+      const selectedKind:'G83'|'G84'|null=fanucDrill.active?.kind ?? pendingFanucCycle ?? (gWords.includes(84)?'G84':gWords.includes(83)?'G83':null);
+      if(selectedKind && !gWords.includes(80) && !tokens.some(t=>['X','Y','Z','R','A','B','C'].includes(t.letter)) && tokens.every(t=>['N','G','F'].includes(t.letter)) && gWords.every(g=>[90,94,98,99].includes(g) || g===(selectedKind==='G84'?84:83)) && !(gWords.includes(98)&&gWords.includes(99))){
+        if(!fanucDrill.active)pendingFanucCycle=selectedKind;
+        if(byLetter.has('F'))state.feed=byLetter.get('F')![0]*(state.unit==='inch'?25.4:1);
+        if(gWords.includes(90))state.distanceMode='absolute';
+        continue;
+      }
+      if(gWords.includes(80)){
+        if(fanucDrill.active?.kind==='G84' || pendingFanucCycle==='G84')state.spindle=null;
+        fanucDrill.active=null;pendingFanucCycle=null;pendingTapPosition=null;state.position=unknownPosition();state.motionMode=null;
+        if(tokens.some(t=>['X','Y','Z','A','B','C'].includes(t.letter))){warn(sourceLine,'UNCERTAIN_CYCLE_END','? 사이클 해제와 결합된 이동은 표시하지 않았습니다.');status='PARTIAL';continue;}
+      } else {
+        const scale=state.unit==='inch'?25.4:1;
+        const kind=gWords.includes(83)?'G83':gWords.includes(84)?'G84':fanucDrill.active?.kind ?? pendingFanucCycle;
+        pendingFanucCycle=null;
+        const allowed=!(gWords.includes(83)&&gWords.includes(84)) && !(gWords.includes(98)&&gWords.includes(99)) && (byLetter.get('Q')?.length??0)<=1 && tokens.every(t=>['N','G','X','Y','Z','R','Q','F'].includes(t.letter)) && gWords.every(g=>[83,84,90,94,98,99].includes(g));
+        const absolute=gWords.includes(90)||state.distanceMode==='absolute';
+        const x=byLetter.has('X')?byLetter.get('X')![0]*scale:kind==='G84' && pendingTapPosition?pendingTapPosition.x:state.position.x;
+        const y=byLetter.has('Y')?byLetter.get('Y')![0]*scale:kind==='G84' && pendingTapPosition?pendingTapPosition.y:state.position.y;
+        const initialZ=fanucDrill.active ? fanucDrill.active.initialZ : kind==='G84' && pendingTapPosition ? pendingTapPosition.z : state.position.z;
+        const approachZ:number|null=fanucDrill.active ? fanucDrill.active.lastReturnZ : initialZ;
+        pendingTapPosition=null;
+        const r:number|undefined=byLetter.has('R')?byLetter.get('R')![0]*scale:fanucDrill.active?.r;
+        const z:number|undefined=byLetter.has('Z')?byLetter.get('Z')![0]*scale:fanucDrill.active?.z;
+        const q:number|undefined=byLetter.has('Q')?byLetter.get('Q')![0]*scale:fanucDrill.active?.q;
+        if(allowed && kind && absolute && state.unit!==null && state.plane==='XY' && x!==null && y!==null && r!==undefined && z!==undefined && (q===undefined ? kind==='G84' : Number.isFinite(q) && (q>0 || kind==='G84' && q===0)) && r>z && renderablePosition(toReference({x,y,z:r})) && renderablePosition(toReference({x,y,z}))){
+          state.distanceMode='absolute';state.position={x,y,z:null};
+          if(byLetter.has('F'))state.feed=byLetter.get('F')![0]*scale;
+          const pitch=kind==='G84' && fanucFeedPerMinute && state.feed!==null && state.feed>0 && state.spindle!==null && state.spindle>0 ? state.feed/state.spindle : undefined;
+          const pecks=kind==='G84' && q!==undefined && q>0 ? Math.ceil(Math.max(1,(r-z)/q-1e-10)) : 0;
+          const showPecks=Number.isSafeInteger(pecks) && pecks>0 && pecks<=1000;
+          const clearance=kind==='G84' && (showPecks || q===undefined || q===0) && fanucReturnMode==='initial' && initialZ!==null && initialZ>r && renderablePosition(toReference({x,y,z:initialZ}));
+          const hasReturn=kind==='G84' && (showPecks || q===undefined || q===0);
+          const lastReturnZ:number|null=hasReturn && fanucReturnMode==='initial' && initialZ!==null ? Math.max(initialZ,r) : hasReturn && fanucReturnMode==='r' ? r : null;
+          fanucDrill.active={kind,r,z,q,initialZ,lastReturnZ};
+          const firstSegment=segments.length;
+          warn(sourceLine,'APPROXIMATE_DRILL_SPAN',showPecks ? '? FANUC Q 절입과 마지막 복귀 지령을 표시합니다. 중간 후퇴·재진입과 실제 장비 동작은 미확인입니다.' : kind==='G84' && (q===undefined || q===0) ? `? G84의 R~Z 진입과 R 복귀${clearance?' 및 G98 시작 높이 복귀':''}를 표시합니다. R면 접근은 시작 높이가 확인된 경우에만 지령 미리보기로 표시합니다. 주축 동기·정지와 실제 장비 동작은 미확인입니다.` : `? ${kind}의 R부터 Z까지 지령 깊이 범위를 표시합니다. 반복 이송·후퇴와 실제 장비 동작은 미확인입니다.`);status='PARTIAL';
+          segments.push({id:`line-${sourceLine}-drill`,sourceLine,...(byLetter.has('N')?{nBlock:String(byLetter.get('N')![0])}:{}),rawCode,motion:'G01',start:toReference({x,y,z:r}),end:toReference({x,y,z}),unit:state.unit,distanceMode:'absolute',plane:'XY',status:'PARTIAL',warningIds:[warnings[warnings.length-1].id],drillSpan:kind,...(fanucTilt?{eulerTransformed:true}:{}),...(pitch!==undefined && Number.isFinite(pitch)?{tappingPitch:pitch}:{}),...(state.tool!==null?{tool:state.tool}:{}),...(fanucToolLengthOffset!==null?{toolLengthOffset:fanucToolLengthOffset}:{}),...(fanucWorkFrame!==null?{workFrame:fanucWorkFrame}:{}),rotaryGroup:fanucRotaryGroup});
+          if(kind==='G84' && (q===undefined || q===0)){const entry=segments[segments.length-1];entry.tapPhase='in';segments.push({...entry,id:`line-${sourceLine}-tap-return`,start:entry.end,end:entry.start,tapPhase:'out'});}
+          if(showPecks && q!==undefined){
+            const entry=segments.pop()!;
+            for(let i=0;i<pecks;i++){
+              const from=i===0?r:Math.max(z,r-i*q),to=i===pecks-1?z:Math.max(z,r-(i+1)*q);
+              segments.push({...entry,id:`line-${sourceLine}-tap-peck-${i}`,start:toReference({x,y,z:from}),end:toReference({x,y,z:to}),tapPhase:'in',tapPeck:{index:i+1,total:pecks}});
+            }
+            segments.push({...entry,id:`line-${sourceLine}-tap-return`,start:entry.end,end:entry.start,tapPhase:'out'});
+          }
+          if(clearance && initialZ!==null){
+            const entry=segments[segments.length-1];
+            segments.push({...entry,id:`line-${sourceLine}-tap-clearance`,motion:'G00',start:toReference({x,y,z:r}),end:toReference({x,y,z:initialZ}),tapPhase:'clearance'});
+          }
+          if(kind==='G84' && approachZ!==null && approachZ>r && renderablePosition(toReference({x,y,z:approachZ}))){
+            const entry=segments[firstSegment];
+            segments.splice(firstSegment,0,{...entry,id:`line-${sourceLine}-tap-approach`,motion:'G00',start:toReference({x,y,z:approachZ}),end:toReference({x,y,z:r}),tapPhase:'approach',tapPeck:undefined});
+          }
+          continue;
+        }
+        fanucDrill.active=null;fanucUnknownCycle=true;state.position=unknownPosition();state.motionMode=null;
+        warn(sourceLine,'UNCERTAIN_FANUC_CYCLE',`? ${kind ?? '드릴 사이클'}의 위치 또는 지령을 확인할 수 없어 사이클 이동을 생략합니다.`);status='PARTIAL';continue;
+      }
+    }
+    if(fanuc && fanucUnknownCycle){
+      if(!gWords.includes(80))continue;
+      fanucUnknownCycle=false;state.position=unknownPosition();state.motionMode=null;
+      if(tokens.some(t=>['X','Y','Z','A','B','C'].includes(t.letter))){warn(sourceLine,'UNCERTAIN_CYCLE_END','? 사이클 해제와 결합된 이동은 표시하지 않았습니다.');status='PARTIAL';continue;}
+    }
+    if(fanuc && gWords.some(g=>g===83||g===84)){
+      if(gWords.some(g=>![83,84,94,98].includes(g))||mWords.length){warn(sourceLine,'UNSUPPORTED_FANUC_CYCLE','복합 사이클을 해석할 수 없어 중단했습니다.');status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;}
+      fanucUnknownCycle=true;state.position=unknownPosition();state.motionMode=null;
+      warn(sourceLine,'UNCERTAIN_FANUC_CYCLE',`? G${gWords.find(g=>g===83||g===84)} 사이클 이동은 표시하지 않고 G80 해제 이후 다시 확인합니다.`);status='PARTIAL';continue;
+    }
+    if(fanuc && gWords.some(g=>g===68.2||g===69||g===53.1)){
+      if(mWords.length||gWords.length!==1||tokens.some(t=>!['N','G','X','Y','Z','I','J','K','P','Q','R'].includes(t.letter))){warn(sourceLine,'UNSUPPORTED_FANUC_TRANSFORM','좌표 변환과 결합된 블록을 확인할 수 없어 중단했습니다.');status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;}
+      const g=gWords[0];state.position=unknownPosition();fanucRotaryGroup++;
+      if(g===69)fanucTilt=null;
+      if(g===68.2){
+        fanucTilt=null;
+        const euler=options.fanucEulerPreview && (!byLetter.has('P') || (byLetter.get('P')?.length===1 && byLetter.get('P')![0]===0)) && ['I','J','K'].every(key=>(byLetter.get(key)?.length??0)===1) && ['I','J','K'].every(key=>Math.abs(byLetter.get(key)![0])<=360) && !byLetter.has('Q') && !byLetter.has('R');
+        if(euler){const scale=state.unit==='inch'?25.4:1;const origin={x:(byLetter.get('X')?.[0]??0)*scale,y:(byLetter.get('Y')?.[0]??0)*scale,z:(byLetter.get('Z')?.[0]??0)*scale};if(renderablePosition(origin))fanucTilt={origin,angles:{i:byLetter.get('I')![0],j:byLetter.get('J')![0],k:byLetter.get('K')![0]}};}
+      }
+      warn(sourceLine,'UNKNOWN_ROTARY_TRANSFORM',fanucTilt ? `? G${g}: FANUC 오일러 지령 좌표 변환 미리보기입니다. 실제 회전축 이동과 장비 설정은 미확인입니다.` : `? G${g} 회전 좌표 변환은 적용하지 않았습니다. 이후 원본 좌표는 별도 구간으로 표시합니다.`);status='PARTIAL';continue;
+    }
+
     const knownLetters = new Set(['N', 'G', 'M', 'X', 'Y', 'Z', 'F', 'S', 'T', 'I', 'J', 'K', 'R']);
     const pathControl = linuxcnc && gWords.includes(64);
     const dwell = linuxcnc && gWords.includes(4);
@@ -295,20 +431,75 @@ function parseCore(text: string, options: ParserOptions, originalSource = text):
     if (rough) for (const letter of ['Q','D']) knownLetters.add(letter);
     if (finish) for (const letter of ['Q','D','E','P']) knownLetters.add(letter);
     if (enableLatheComp) for(const letter of ['D','L']) knownLetters.add(letter);
+    if(fanuc && gWords.includes(43))knownLetters.add('H');
+    if(fanuc)for(const axis of ['A','B','C'])knownLetters.add(axis);
+    if(fanuc){
+      if(mWords.includes(29) && !gWords.length && tokens.every(t=>['N','M','S'].includes(t.letter))){
+        if(byLetter.has('S'))state.spindle=byLetter.get('S')![0];
+        pendingTapPosition={...state.position};state.position=unknownPosition();
+        warn(sourceLine,'UNCERTAIN_RIGID_TAPPING','? M29 동기 탭 설정의 장비 동작은 미확인입니다. 이후 구멍 위치는 프로그램 좌표로만 표시합니다.');status='PARTIAL';continue;
+      }
+      const boundary=mWords.find(m=>![2,3,4,5,6,8,9,30].includes(m));
+      const smooth=gWords.find(g=>g===5 || g===5.1);
+      if(boundary!==undefined || smooth!==undefined){
+        if((boundary!==undefined && (gWords.length || tokens.some(t=>!['N','M','S'].includes(t.letter)))) || (smooth!==undefined && (mWords.length || gWords.length!==1 || tokens.some(t=>!['N','G','P','Q'].includes(t.letter))))) {warn(sourceLine,'UNSUPPORTED_FANUC_MODE','장비별 명령과 다른 동작이 결합되어 중단했습니다.');status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;}
+        // Keep only the modal G words explicitly commanded by the program.
+        // The machine-specific command can still alter actual machine state,
+        // so break the position and label the subsequent view as a preview.
+        state.position=unknownPosition();
+        const name=boundary!==undefined?`M${boundary}`:`G${smooth}`;
+        warn(sourceLine,'UNCERTAIN_FANUC_BOUNDARY',`${name} 장비별 동작은 표시하지 않습니다. 이후 미리보기는 프로그램에서 마지막으로 지정한 G코드를 따르며 실제 장비 상태는 미확인입니다.`);status='PARTIAL';continue;
+      }
+      const unknownMachine=mWords.find(m=>![2,3,4,5,6,8,9,30].includes(m));
+      if(unknownMachine!==undefined){warn(sourceLine,'UNKNOWN_MACHINE_COMMAND',`M${unknownMachine}의 장비별 동작을 알 수 없어 여기서 중단했습니다.`);status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;}
+    }
+    if(fanuc && gWords.includes(53)){
+      const safeMachineRapid=gWords.includes(0) && (gWords.includes(90)||state.distanceMode==='absolute') && gWords.every(g=>g===53 || g===0 || g===90) && tokens.every(t=>['N','G','X','Y','Z'].includes(t.letter)) && ['X','Y','Z'].some(a=>byLetter.has(a));
+      if(!safeMachineRapid){warn(sourceLine,'UNSUPPORTED_MACHINE_MOVE','G53 기계 좌표 이동 조건을 확인할 수 없어 중단했습니다.');status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;}
+      for(const axis of ['x','y','z'] as const)if(byLetter.has(axis.toUpperCase()))state.position[axis]=null;
+      if(gWords.includes(90))state.distanceMode='absolute';state.motionMode='G00';
+      warn(sourceLine,'UNKNOWN_MACHINE_POSITION','G53 기계 좌표 이동은 작업 원점을 몰라 표시하지 않았습니다. 이후 확정된 좌표부터 별도로 표시합니다.');status='PARTIAL';continue;
+    }
     const unsupportedLetter = tokens.find((t) => !knownLetters.has(t.letter));
-    if (unsupportedLetter || byLetter.has('M') && mWords.some((m) => !(linuxcnc ? [2, 3, 4, 5, 30, ...(pointReference ? [6] : [])] : [2, 30]).includes(m))) {
+
+    if (unsupportedLetter || byLetter.has('M') && mWords.some((m) => !(linuxcnc ? [2, 3, 4, 5, 30, ...(pointReference ? [6] : [])] : fanuc ? [2,3,4,5,6,8,9,30] : [2,30]).includes(m))) {
       warn(sourceLine, 'UNSUPPORTED_BLOCK', 'Unsupported word or machine command; interpretation stopped here');
       status = segments.length ? 'PARTIAL' : 'UNSUPPORTED'; stopped = true; break;
     }
 
-    const supportedG = new Set([0, 1, 2, 3, 17, 18, 19, 20, 21, 90, 91, ...(linuxcnc ? [4, 8, 61, 61.1, 64, 76] : []), ...(pointReference ? [40, 41, 42, 43, 49, 54, 70, 71.1, 71.2, 92, 92.1] : []), ...(latheTools ? [41.1,42.1] : [])]);
+    const supportedG = new Set([0, 1, 2, 3, 17, 18, 19, 20, 21, 90, 91, ...(linuxcnc ? [4, 8, 61, 61.1, 64, 76] : []), ...(fanuc ? [40,43,49,54,55,56,57,58,59,80,94,98,99] : []), ...(pointReference ? [40, 41, 42, 43, 49, 54, 70, 71.1, 71.2, 92, 92.1] : []), ...(latheTools ? [41.1,42.1] : [])]);
+    if (fanuc && gWords.includes(28)) {
+      const safeZeroReturn=gWords.includes(91) && gWords.every(g=>g===28 || g===91 || g===49) && tokens.every(t=>['N','G','X','Y','Z','A','B','C'].includes(t.letter)) && ['X','Y','Z','A','B','C'].every(a=>!byLetter.has(a)||byLetter.get(a)![0]===0);
+      if(!safeZeroReturn){warn(sourceLine,'UNSUPPORTED_G28','G28 중간 경유 이동을 확정할 수 없어 여기서 중단했습니다.');status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;}
+      if(['A','B','C'].some(a=>byLetter.has(a))) {state.position=unknownPosition();fanucRotaryGroup++;}
+      if(gWords.includes(49)){state.position.z=null;fanucToolLengthOffset=null;}
+      const axes=(['x','y','z'] as const).filter(axis=>byLetter.has(axis.toUpperCase()));
+      for(const axis of (axes.length ? axes : ['x','y','z'] as const)) state.position[axis]=null;
+      state.distanceMode='incremental';
+      warn(sourceLine,'UNKNOWN_MACHINE_HOME','G28 원점 복귀는 장비 원점을 몰라 표시하지 않았습니다. 이후 확정된 좌표부터 별도로 표시합니다.');status='PARTIAL';continue;
+    }
+    if(fanuc && !gWords.includes(28) && ['A','B','C'].some(a=>byLetter.has(a))){
+      if(['A','B','C'].some(a=>(byLetter.get(a)?.length??0)>1) || gWords.some(g=>![0,1,43,90,91,17,18,19].includes(g)) || mWords.length){warn(sourceLine,'UNSUPPORTED_ROTARY_AXIS','회전축과 결합된 이동을 확인할 수 없어 중단했습니다.');status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;}
+      state.position=unknownPosition();fanucRotaryGroup++;
+      const angles=['A','B','C'].filter(a=>byLetter.has(a)).map(a=>`${a}${byLetter.get(a)![0]}°`).join(' · ');
+      const mode=gWords.includes(91)?'incremental':gWords.includes(90)?'absolute':state.distanceMode??'unknown';
+      rotaryCommands[fanucRotaryGroup]={sourceLine,command:angles,mode};
+      const rotaryMode=mode==='absolute'?'절대 지령':mode==='incremental'?'증분 지령':'좌표 모드 미확인';
+      warn(sourceLine,'UNKNOWN_ROTARY_AXIS',`? 회전축 ${angles} (${rotaryMode}): 지령값만 확인됩니다. 실제 회전 이동은 표시하지 않습니다.`);status='PARTIAL';
+    }
+    if (fanuc && mWords.includes(6)) {
+      if(tokens.some(t=>!['N','T','M'].includes(t.letter)) || (byLetter.has('T') && (!Number.isInteger(byLetter.get('T')![0]) || byLetter.get('T')![0]<0))){warn(sourceLine,'UNSUPPORTED_TOOL_CHANGE','공구 교환과 다른 동작이 결합된 블록은 확인할 수 없어 중단했습니다.');status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;}
+      if(byLetter.has('T'))state.tool=byLetter.get('T')![0];
+      state.position=unknownPosition();
+      warn(sourceLine,'UNKNOWN_TOOL_CHANGE','공구 교환 중 이동은 장비 설정을 몰라 표시하지 않았습니다. 이후 확정된 좌표부터 별도로 표시합니다.');status='PARTIAL';continue;
+    }
     const badG = gWords.find((g) => !supportedG.has(g));
     if (badG !== undefined) {
       warn(sourceLine, 'UNSUPPORTED_GCODE', `G${badG} is outside the supported profile; interpretation stopped here`);
       status = segments.length ? 'PARTIAL' : 'UNSUPPORTED'; stopped = true; break;
     }
     const conflicts = [
-      [0, 1, 2, 3, 70, 71.1, 71.2, 76], [90, 91], [20, 21], [17, 18, 19], [61, 61.1, 64], [40,41,42,41.1,42.1], [43,49], [92,92.1],
+      [54,55,56,57,58,59], [0, 1, 2, 3, 70, 71.1, 71.2, 76], [90, 91], [20, 21], [17, 18, 19], [61, 61.1, 64], [40,41,42,41.1,42.1], [43,49], [92,92.1], ...(fanuc ? [[98,99]] : []),
     ].some((group) => group.filter((g) => gWords.includes(g)).length > 1);
     if (conflicts) {
       warn(sourceLine, 'CONFLICTING_MODAL', 'Conflicting modal groups in one block'); status = 'INVALID'; stopped = true; break;
@@ -320,8 +511,24 @@ function parseCore(text: string, options: ParserOptions, originalSource = text):
       warn(sourceLine, 'INVALID_PATH_CONTROL', 'Invalid path control or dwell parameters'); status = 'INVALID'; stopped = true; break;
     }
 
+    if (fanuc) {
+      const frame=gWords.find(g=>g>=54 && g<=59);
+      if(frame!==undefined){
+        if(fanucWorkFrame!==null && fanucWorkFrame!==frame){state.position=unknownPosition();warn(sourceLine,'UNKNOWN_WORK_OFFSET',`? G${fanucWorkFrame}에서 G${frame}로 전환하며 원점 간 이동은 표시하지 않습니다. 좌표계를 선택해 따로 확인하세요.`);status='PARTIAL';fanucWorkFrame=frame;}
+        if(fanucWorkFrame===null){fanucWorkFrame=frame;state.position=unknownPosition();warn(sourceLine,'UNKNOWN_WORK_ORIGIN',`G${frame} 작업 원점은 미확정입니다. 좌표는 해당 작업 좌표계의 지령값입니다.`);status='PARTIAL';}
+      }
+      if(gWords.includes(49)){state.position.z=null;fanucToolLengthOffset=null;}
+      if(gWords.includes(43)){
+        if((byLetter.get('H')?.length??0)!==1 || !Number.isInteger(byLetter.get('H')![0]) || byLetter.get('H')![0]<0){warn(sourceLine,'INVALID_FANUC_TOOL_OFFSET','G43 공구 보정 번호를 확인할 수 없어 중단했습니다.');status=segments.length?'PARTIAL':'UNSUPPORTED';stopped=true;break;}
+        fanucToolLengthOffset=byLetter.get('H')![0];
+        state.position.z=null;
+        warn(sourceLine,'UNKNOWN_FANUC_TOOL_OFFSET',`? G43 H${fanucToolLengthOffset}: 보정 번호만 확인되며 공구 길이 보정값은 미확인입니다. 해당 이동은 생략합니다.`);status='PARTIAL';
+      }
+
+    }
     const blockStartState: ModalState = { ...state, position: { ...state.position } };
     // Modal words are applied before coordinates in their own block.
+    if(fanuc && state.unit==='native' && (gWords.includes(20)||gWords.includes(21)) && (segments.length>0 || finitePosition(state.position))){warn(sourceLine,'UNKNOWN_UNIT_CHANGE','기존 좌표의 단위가 미확정이라 단위 변경 위치에서 중단했습니다.');status='PARTIAL';stopped=true;break;}
     if (gWords.includes(20)) state.unit = 'inch';
     if (gWords.includes(21)) state.unit = 'mm';
     if (gWords.includes(90)) state.distanceMode = 'absolute';
@@ -485,7 +692,7 @@ function parseCore(text: string, options: ParserOptions, originalSource = text):
       const value = (letter:string) => byLetter.get(letter)?.[0];
       const start = { x:state.position.x! / scale, y:state.position.y! / scale, z:state.position.z! / scale };
       const z = value('Z')!;
-      const result = expandLinuxCncG76({sourceLine, rawCode, units:state.unit, start, endZ:state.distanceMode === 'absolute' ? z : start.z + z, P:value('P')!, I:value('I')!, J:value('J')!, K:value('K')!, R:value('R'), Q:value('Q'), H:value('H'), E:value('E'), L:value('L'), D:value('D')});
+      const result = expandLinuxCncG76({sourceLine, rawCode, units:state.unit === 'inch' ? 'inch' : 'mm', start, endZ:state.distanceMode === 'absolute' ? z : start.z + z, P:value('P')!, I:value('I')!, J:value('J')!, K:value('K')!, R:value('R'), Q:value('Q'), H:value('H'), E:value('E'), L:value('L'), D:value('D')});
       if (!result.ok) {
         warn(sourceLine, result.error.code, result.error.message); Object.assign(state, blockStartState); status = 'INVALID'; stopped = true; break;
       }
@@ -504,9 +711,17 @@ function parseCore(text: string, options: ParserOptions, originalSource = text):
     const hasAxis = axes.some((axis) => byLetter.has(axis));
     const hasArcParams = ['I', 'J', 'K', 'R'].some((letter) => byLetter.has(letter));
     const arcMotion = state.motionMode === 'G02' || state.motionMode === 'G03';
+    const recoverAbsoluteEndpoint=()=>{
+      if(state.unit===null || state.distanceMode!=='absolute'){state.position=unknownPosition();return;}
+      const endpoint={...state.position};
+      for(const axis of axes){const coordinate=byLetter.get(axis)?.[0];if(coordinate!==undefined){const value=coordinate*scale;endpoint[axis.toLowerCase() as 'x'|'y'|'z']=Number.isFinite(value)?value:null;}}
+      state.position=endpoint;
+    };
     if (hasArcParams && !arcMotion || arcMotion && (hasAxis || hasArcParams) && state.plane === null) {
       warn(sourceLine, hasArcParams && !arcMotion ? 'UNSUPPORTED_ARC' : 'UNKNOWN_ARC_PLANE', hasArcParams && !arcMotion ? 'Arc parameters require G02/G03' : 'G17/G18/G19 must be explicitly selected before an arc');
-      status = segments.length ? 'PARTIAL' : 'UNSUPPORTED'; stopped = true; break;
+      status = segments.length ? 'PARTIAL' : 'UNSUPPORTED';
+      if(fanuc){if(arcMotion)recoverAbsoluteEndpoint();else state.position=unknownPosition();continue;}
+      stopped = true; break;
     }
 
     if (hasAxis || arcMotion && hasArcParams) {
@@ -515,12 +730,16 @@ function parseCore(text: string, options: ParserOptions, originalSource = text):
         status = segments.length ? 'PARTIAL' : 'UNSUPPORTED';
         // Do not let later modal declarations bridge over an untracked move.
         state.position = unknownPosition();
+        if(fanuc)continue;
         stopped = true;
         break;
       }
       if (arcMotion && !renderablePosition(state.position)) {
         warn(sourceLine, 'UNKNOWN_ARC_START', 'Arc requires a fully known starting position');
-        status = segments.length ? 'PARTIAL' : 'UNSUPPORTED'; stopped = true; state.position = unknownPosition(); break;
+        status = segments.length ? 'PARTIAL' : 'UNSUPPORTED';
+        if(fanuc){recoverAbsoluteEndpoint();continue;}
+        state.position = unknownPosition();
+        stopped = true; break;
       }
       const start = { ...state.position };
       const end = { ...state.position };
@@ -563,8 +782,10 @@ function parseCore(text: string, options: ParserOptions, originalSource = text):
         status = segments.length ? 'PARTIAL' : 'UNSUPPORTED'; stopped = true; break;
       }
       if (arcMotion) {
-        const arc = solveArc(start, end, state.plane!, state.motionMode === 'G02', byLetter, scale);
+        // Viewer-only approximation, not a claim about the controller's arc acceptance.
+        const arc = solveArc(start, end, state.plane!, state.motionMode === 'G02', byLetter, scale, fanuc ? 0.002 : 0);
         if (!arc) {
+          if(fanuc){warn(sourceLine,'UNCERTAIN_ARC','? 원호 접점을 확인할 수 없어 이 원호는 표시하지 않았습니다. 지정된 끝점에서 다음 경로를 이어갑니다.');state.position=end;status='PARTIAL';continue;}
           warn(sourceLine, 'INVALID_ARC_GEOMETRY', 'Arc center/radius is ambiguous or inconsistent with its endpoints');
           Object.assign(state, blockStartState); status = 'INVALID'; stopped = true; break;
         }
@@ -592,9 +813,10 @@ function parseCore(text: string, options: ParserOptions, originalSource = text):
         const vertices = new Float64Array((count + 1) * 3);
         for (let i = 0; i <= count; i += 1) {
           const fraction = i / count, angle = Math.atan2(start[arc.axes.v]! - arc.centerV, start[arc.axes.u]! - arc.centerU) + arc.sweep * fraction;
+          const radius = arc.radius + ((('endRadius' in arc ? arc.endRadius : undefined) ?? arc.radius) - arc.radius) * fraction;
           const point = { ...start };
-          point[arc.axes.u] = i === count ? end[arc.axes.u] : arc.centerU + arc.radius * Math.cos(angle);
-          point[arc.axes.v] = i === count ? end[arc.axes.v] : arc.centerV + arc.radius * Math.sin(angle);
+          point[arc.axes.u] = i === count ? end[arc.axes.u] : arc.centerU + radius * Math.cos(angle);
+          point[arc.axes.v] = i === count ? end[arc.axes.v] : arc.centerV + radius * Math.sin(angle);
           point[arc.axes.out] = start[arc.axes.out]! + (end[arc.axes.out]! - start[arc.axes.out]!) * fraction;
           const referencePoint = toReference(point);
           const pointOffset = float32Offset(referencePoint);
@@ -615,14 +837,20 @@ function parseCore(text: string, options: ParserOptions, originalSource = text):
         if (stopped) break;
         totalArcVertices += arcVertexCount;
         state.position = end;
-        segments.push({ id: `line-${sourceLine}-segment-0`, sourceLine, ...(byLetter.has('N') ? { nBlock: String(byLetter.get('N')![0]) } : {}), rawCode, motion: state.motionMode, start:referenceStart, end:referenceEnd, vertices, unit: state.unit, distanceMode: state.distanceMode, plane: state.plane, status: 'SUPPORTED', warningIds: [], ...(state.feed !== null ? { feed: state.feed } : {}), ...(state.spindle !== null ? { spindle: state.spindle } : {}), ...(motionTool() !== null ? { tool: motionTool()! } : {}) });
+        const approximate='approximate' in arc && arc.approximate;
+        if(approximate){
+          const radiusDifference=Math.abs(arc.radius-(('endRadius' in arc ? arc.endRadius : undefined) ?? arc.radius));
+          const difference=Number(radiusDifference.toPrecision(6));
+          warn(sourceLine,'APPROXIMATE_ARC',`? 원호 시작·끝 반경 차이 ${difference} ${state.unit==='native'?'원본 단위':'mm'}: 지령 끝점을 유지한 근사 경로입니다. 실제 장비의 허용 여부는 미확인입니다.`);status='PARTIAL';
+        }
+        segments.push({ id: `line-${sourceLine}-segment-0`, sourceLine, ...(byLetter.has('N') ? { nBlock: String(byLetter.get('N')![0]) } : {}), rawCode, motion: state.motionMode, start:referenceStart, end:referenceEnd, vertices, unit: state.unit, distanceMode: state.distanceMode, plane: state.plane, status: approximate?'PARTIAL':'SUPPORTED', warningIds: approximate?[warnings[warnings.length-1].id]:[], ...(state.feed !== null ? { feed: state.feed } : {}), ...(state.spindle !== null ? { spindle: state.spindle } : {}), ...(motionTool() !== null ? { tool: motionTool()! } : {}), ...(fanuc && fanucTilt ? {eulerTransformed:true} : {}), ...(fanuc && fanucToolLengthOffset!==null ? {toolLengthOffset:fanucToolLengthOffset} : {}), ...(fanuc ? {rotaryGroup:fanucRotaryGroup,...(fanucWorkFrame!==null ? {workFrame:fanucWorkFrame} : {})} : {}) });
         if (mWords.includes(2) || mWords.includes(30)) { programEndIndex = index; stopped = true; }
         continue;
       }
       state.position = end;
       if (renderablePosition(referenceStart) && renderablePosition(referenceEnd)) {
         if (referenceStart.x !== referenceEnd.x || referenceStart.y !== referenceEnd.y || referenceStart.z !== referenceEnd.z) {
-          segments.push({ id: `line-${sourceLine}-segment-0`, sourceLine, ...(byLetter.has('N') ? { nBlock: String(byLetter.get('N')![0]) } : {}), rawCode, motion: state.motionMode, start:referenceStart, end:referenceEnd, unit: state.unit, distanceMode: state.distanceMode, plane: state.plane, status: 'SUPPORTED', warningIds: [], ...(state.feed !== null ? { feed: state.feed } : {}), ...(state.spindle !== null ? { spindle: state.spindle } : {}), ...(motionTool() !== null ? { tool: motionTool()! } : {}) });
+          segments.push({ id: `line-${sourceLine}-segment-0`, sourceLine, ...(byLetter.has('N') ? { nBlock: String(byLetter.get('N')![0]) } : {}), rawCode, motion: state.motionMode, start:referenceStart, end:referenceEnd, unit: state.unit, distanceMode: state.distanceMode, plane: state.plane, status: 'SUPPORTED', warningIds: [], ...(state.feed !== null ? { feed: state.feed } : {}), ...(state.spindle !== null ? { spindle: state.spindle } : {}), ...(motionTool() !== null ? { tool: motionTool()! } : {}), ...(fanuc && fanucTilt ? {eulerTransformed:true} : {}), ...(fanuc && fanucToolLengthOffset!==null ? {toolLengthOffset:fanucToolLengthOffset} : {}), ...(fanuc ? {rotaryGroup:fanucRotaryGroup,...(fanucWorkFrame!==null ? {workFrame:fanucWorkFrame} : {})} : {}) });
         }
         pendingCompExit=null;
       } else {
@@ -641,7 +869,9 @@ function parseCore(text: string, options: ParserOptions, originalSource = text):
       if (lines[index].trim() === '%') continue;
       let hasCode: boolean;
       try {
-        hasCode = stripComments(lines[index]).trim().length > 0;
+        const code = stripComments(lines[index]).trim();
+        // An N-only block is a sequence label, not an executable command.
+        hasCode = code.length > 0 && !/^N\s*\d+$/i.test(code);
       } catch {
         // After the program end, malformed or ambiguous text still deserves a diagnostic.
         hasCode = lines[index].trim().length > 0;
@@ -653,5 +883,5 @@ function parseCore(text: string, options: ParserOptions, originalSource = text):
     }
   }
   if (stopped && status !== 'SUPPORTED' && programEndIndex === null) state.position = unknownPosition();
-  return { status, segments, warnings, finalState: state };
+  return { status, segments, warnings, finalState: state, ...(Object.keys(rotaryCommands).length ? {rotaryCommands} : {}) };
 }
