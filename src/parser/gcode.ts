@@ -870,8 +870,9 @@ function parseCore(text: string, options: ParserOptions, originalSource = text):
       let hasCode: boolean;
       try {
         const code = stripComments(lines[index]).trim();
-        // An N-only block is a sequence label, not an executable command.
-        hasCode = code.length > 0 && !/^N\s*\d+$/i.test(code);
+        // Sequence labels and an N-labelled trailing delimiter do not request motion.
+        const trailingDelimiter=options.controllerProfile==='fanuc' && /^N\s*\d+\s*%$/i.test(code);
+        hasCode = code.length > 0 && !/^N\s*\d+$/i.test(code) && !trailingDelimiter;
       } catch {
         // After the program end, malformed or ambiguous text still deserves a diagnostic.
         hasCode = lines[index].trim().length > 0;

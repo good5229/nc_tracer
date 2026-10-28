@@ -2,6 +2,12 @@ import {describe,expect,it} from 'vitest';
 import {parseGcode} from '../../src/parser/gcode';
 const fanuc={controllerProfile:'fanuc' as const};
 describe('bounded FANUC work-coordinate preview',()=>{
+ it('does not treat an N-labelled trailing delimiter as a motion after M30',()=>{
+  const r=parseGcode('G21 G90 G0 X0 Y0 Z0\nG1 X1\nM30\nN10 (종료)\nN11 %',fanuc);
+  expect(r.warnings.some(w=>w.code==='CODE_AFTER_PROGRAM_END')).toBe(false);
+  const extra=parseGcode('G21 G90 G0 X0 Y0 Z0\nM30\nN11 %\nN12 G1 X9',fanuc);
+  expect(extra.warnings.some(w=>w.code==='CODE_AFTER_PROGRAM_END'&&w.sourceLine===4)).toBe(true);
+ });
  it('treats sequence numbers as labels without changing arc geometry or warnings',()=>{
   const blocks=['G54','G90 G17 G0 X1 Y0 Z0','G03 X0 Y1 I-1 J0','G03 X-1.0005 Y0 I0 J-1'];
   const plain=parseGcode(blocks.join('\n'),fanuc);
