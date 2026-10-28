@@ -42,7 +42,8 @@ export type MotionSegment = {
   /** Programmed feed-per-minute / spindle speed, not a measured thread pitch. */
   tappingPitch?: number;
   /** Known G83 positioning or final return in the partial drill preview. */
-  drillPhase?: 'approach' | 'return' | 'clearance';
+  drillPhase?: 'approach' | 'return' | 'clearance' | 'in';
+  drillPeck?: { index: number; total: number };
   /** Direction of the simple no-Q tapping preview. */
   tapPhase?: 'approach' | 'in' | 'out' | 'clearance';
   tapPeck?: {index:number;total:number};
@@ -368,14 +369,25 @@ function parseCore(text: string, options: ParserOptions, originalSource = text):
           const pitch=kind==='G84' && fanucFeedPerMinute && state.feed!==null && state.feed>0 && state.spindle!==null && state.spindle>0 ? state.feed/state.spindle : undefined;
           const pecks=kind==='G84' && q!==undefined && q>0 ? Math.ceil(Math.max(1,(r-z)/q-1e-10)) : 0;
           const showPecks=Number.isSafeInteger(pecks) && pecks>0 && pecks<=1000;
+          const drillPecks=kind==='G83' && q!==undefined ? Math.ceil(Math.max(1,(r-z)/q-1e-10)) : 0;
+          const showDrillPecks=Number.isSafeInteger(drillPecks) && drillPecks>0 && drillPecks<=1000;
           const clearance=(kind==='G83' || (kind==='G84' && (showPecks || q===undefined || q===0))) && fanucReturnMode==='initial' && initialZ!==null && initialZ>r && renderablePosition(toReference({x,y,z:initialZ}));
           const hasReturn=kind==='G83' || (kind==='G84' && (showPecks || q===undefined || q===0));
           const lastReturnZ:number|null=hasReturn && fanucReturnMode==='initial' && initialZ!==null ? Math.max(initialZ,r) : hasReturn && fanucReturnMode==='r' ? r : null;
           fanucDrill.active={kind,r,z,q,initialZ,lastReturnZ};
           const firstSegment=segments.length;
-          warn(sourceLine,'APPROXIMATE_DRILL_SPAN',showPecks ? '? FANUC Q 절입과 마지막 복귀 지령을 표시합니다. 중간 후퇴·재진입과 실제 장비 동작은 미확인입니다.' : kind==='G84' && (q===undefined || q===0) ? `? G84의 R~Z 진입과 R 복귀${clearance?' 및 G98 시작 높이 복귀':''}를 표시합니다. R면 접근은 시작 높이가 확인된 경우에만 지령 미리보기로 표시합니다. 주축 동기·정지와 실제 장비 동작은 미확인입니다.` : kind==='G83' ? `? G83의 R~Z 깊이 범위와 최종 R 복귀${clearance?' 및 G98 시작 높이 복귀':''}를 표시합니다. 반복 이송·후퇴와 재진입 간격 및 실제 장비 동작은 미확인입니다.` : `? ${kind}의 R부터 Z까지 지령 깊이 범위를 표시합니다. 반복 이송·후퇴와 실제 장비 동작은 미확인입니다.`);status='PARTIAL';
+          warn(sourceLine,'APPROXIMATE_DRILL_SPAN',showPecks ? '? FANUC Q 절입과 마지막 복귀 지령을 표시합니다. 중간 후퇴·재진입과 실제 장비 동작은 미확인입니다.' : kind==='G84' && (q===undefined || q===0) ? `? G84의 R~Z 진입과 R 복귀${clearance?' 및 G98 시작 높이 복귀':''}를 표시합니다. R면 접근은 시작 높이가 확인된 경우에만 지령 미리보기로 표시합니다. 주축 동기·정지와 실제 장비 동작은 미확인입니다.` : kind==='G83' ? `? G83의 ${showDrillPecks?'Q별 절입 깊이 구간':'R~Z 깊이 범위'}와 최종 R 복귀${clearance?' 및 G98 시작 높이 복귀':''}를 지령 미리보기로 표시합니다. 중간 후퇴·재진입과 실제 장비 동작은 미확인으로 생략합니다.` : `? ${kind}의 R부터 Z까지 지령 깊이 범위를 표시합니다. 반복 이송·후퇴와 실제 장비 동작은 미확인입니다.`);status='PARTIAL';
           segments.push({id:`line-${sourceLine}-drill`,sourceLine,...(byLetter.has('N')?{nBlock:String(byLetter.get('N')![0])}:{}),rawCode,motion:'G01',start:toReference({x,y,z:r}),end:toReference({x,y,z}),unit:state.unit,distanceMode:'absolute',plane:'XY',status:'PARTIAL',warningIds:[warnings[warnings.length-1].id],drillSpan:kind,...(fanucTilt?{eulerTransformed:true}:{}),...(pitch!==undefined && Number.isFinite(pitch)?{tappingPitch:pitch}:{}),...(state.tool!==null?{tool:state.tool}:{}),...(fanucToolLengthOffset!==null?{toolLengthOffset:fanucToolLengthOffset}:{}),...(fanucWorkFrame!==null?{workFrame:fanucWorkFrame}:{}),rotaryGroup:fanucRotaryGroup});
-          if(kind==='G83'){const entry=segments[segments.length-1];segments.push({...entry,id:`line-${sourceLine}-drill-return`,motion:'G00',start:entry.end,end:entry.start,drillPhase:'return'});}
+          if(kind==='G83'){
+            const entry=segments.pop()!;
+            if(showDrillPecks && q!==undefined){
+              for(let i=0;i<drillPecks;i++){
+                const from=i===0?r:Math.max(z,r-i*q),to=i===drillPecks-1?z:Math.max(z,r-(i+1)*q);
+                segments.push({...entry,id:`line-${sourceLine}-drill-peck-${i}`,start:toReference({x,y,z:from}),end:toReference({x,y,z:to}),drillPhase:'in',drillPeck:{index:i+1,total:drillPecks}});
+              }
+            }else segments.push(entry);
+            segments.push({...entry,id:`line-${sourceLine}-drill-return`,motion:'G00',start:entry.end,end:entry.start,drillPhase:'return'});
+          }
           if(kind==='G84' && (q===undefined || q===0)){const entry=segments[segments.length-1];entry.tapPhase='in';segments.push({...entry,id:`line-${sourceLine}-tap-return`,start:entry.end,end:entry.start,tapPhase:'out'});}
           if(showPecks && q!==undefined){
             const entry=segments.pop()!;
@@ -391,7 +403,7 @@ function parseCore(text: string, options: ParserOptions, originalSource = text):
           }
           if((kind==='G83'||kind==='G84') && approachZ!==null && approachZ>r && renderablePosition(toReference({x,y,z:approachZ}))){
             const entry=segments[firstSegment];
-            segments.splice(firstSegment,0,{...entry,id:`line-${sourceLine}-${kind==='G83'?'drill':'tap'}-approach`,motion:'G00',start:toReference({x,y,z:approachZ}),end:toReference({x,y,z:r}),...(kind==='G83'?{drillPhase:'approach' as const}:{tapPhase:'approach' as const}),tapPeck:undefined});
+            segments.splice(firstSegment,0,{...entry,id:`line-${sourceLine}-${kind==='G83'?'drill':'tap'}-approach`,motion:'G00',start:toReference({x,y,z:approachZ}),end:toReference({x,y,z:r}),...(kind==='G83'?{drillPhase:'approach' as const}:{tapPhase:'approach' as const}),tapPeck:undefined,drillPeck:undefined});
           }
           continue;
         }

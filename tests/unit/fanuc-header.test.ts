@@ -102,24 +102,35 @@ describe('bounded FANUC work-coordinate preview',()=>{
   const spans=r.segments.filter(s=>s.drillSpan);
   expect(spans.map(s=>[s.sourceLine,s.start,s.end])).toEqual([
    [3,{x:1,y:2,z:5},{x:1,y:2,z:1}],
-   [3,{x:1,y:2,z:1},{x:1,y:2,z:-4}],
+   [3,{x:1,y:2,z:1},{x:1,y:2,z:-1}],
+   [3,{x:1,y:2,z:-1},{x:1,y:2,z:-3}],
+   [3,{x:1,y:2,z:-3},{x:1,y:2,z:-4}],
    [3,{x:1,y:2,z:-4},{x:1,y:2,z:1}],
    [3,{x:1,y:2,z:1},{x:1,y:2,z:5}],
    [4,{x:3,y:4,z:5},{x:3,y:4,z:1}],
-   [4,{x:3,y:4,z:1},{x:3,y:4,z:-4}],
+   [4,{x:3,y:4,z:1},{x:3,y:4,z:-1}],
+   [4,{x:3,y:4,z:-1},{x:3,y:4,z:-3}],
+   [4,{x:3,y:4,z:-3},{x:3,y:4,z:-4}],
    [4,{x:3,y:4,z:-4},{x:3,y:4,z:1}],
    [4,{x:3,y:4,z:1},{x:3,y:4,z:5}],
   ]);
   expect(spans.every(s=>s.status==='PARTIAL' && s.warningIds.length>0)).toBe(true);
+  expect(spans.filter(s=>s.sourceLine===3 && s.drillPhase==='in').map(s=>s.drillPeck)).toEqual([{index:1,total:3},{index:2,total:3},{index:3,total:3}]);
   expect(r.segments.at(-1)?.sourceLine).toBe(7);
+ });
+ it('bounds the G83 peck expansion and falls back to a marked depth range',()=>{
+  const r=parseGcode('G54\nG90 G17 G0 X1 Y2 Z5\nG83 Z-4 R1 Q0.001\nG80',fanuc);
+  const drill=r.segments.filter(s=>s.sourceLine===3);
+  expect(drill.map(s=>s.drillPhase??'depth')).toEqual(['approach','depth','return']);
+  expect(drill.every(s=>s.status==='PARTIAL')).toBe(true);
  });
  it('does not invent G83 intermediate re-entry or G98 height when unknown',()=>{
   const r=parseGcode('G54\nG90 G17 G0 X1 Y2 Z5\nG83 G99 Z-4 R1 Q2\nX3 Y4\nG80',fanuc);
   const a=r.segments.filter(s=>s.sourceLine===3),b=r.segments.filter(s=>s.sourceLine===4);
-  expect(a.map(s=>s.drillPhase??'depth')).toEqual(['approach','depth','return']);
-  expect(b.map(s=>s.drillPhase??'depth')).toEqual(['depth','return']);
+  expect(a.map(s=>s.drillPhase??'depth')).toEqual(['approach','in','in','in','return']);
+  expect(b.map(s=>s.drillPhase??'depth')).toEqual(['in','in','in','return']);
   expect(a.every(s=>s.status==='PARTIAL')).toBe(true);
-  expect(r.warnings.find(w=>w.sourceLine===3)?.message).toContain('반복 이송·후퇴');
+  expect(r.warnings.find(w=>w.sourceLine===3)?.message).toContain('중간 후퇴·재진입');
  });
  it('shows G84 tapping depth at each known programmed hole after M29',()=>{
   const r=parseGcode('G54\nG90 G17 G0 X1 Y2 Z5\nM29 S100\nG94 G84 G98 Z-4 R1 F40\nX3 Y4\nG80',fanuc);
