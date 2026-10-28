@@ -1,9 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import Viewer3D from './components/Viewer3D';
-import StockExample from './components/StockExample';
 import NcStock from './components/NcStock';
-import LatheStock from './components/LatheStock';
-import ReferenceMill from './components/ReferenceMill';
 import FileComparison from './components/FileComparison';
 import PathStats, { filterPathSegments, PATH_MOTIONS, type PathFilters } from './components/PathStats';
 import type { MotionSegment, ParseResult, ParserOptions } from './parser/gcode';
@@ -76,10 +73,7 @@ export default function App() {
     <div className="profile-info">컨트롤러: {appliedOptions.controllerProfile === 'linuxcnc' ? 'LinuxCNC 일부 명령' : '제한된 일반 프로파일'} · {appliedOptions.linuxcncLatheToolReference ? '선반 예제 공구표: 지름 0.4mm, 방향 2, G54·길이 0, 고정 공구 교환' : appliedOptions.linuxcncPointToolReference ? '점 공구 참조: G54·공구 길이·반경 0, G90/G8, 고정 공구 교환' : '작업 좌표계 미확정 (G54–G59 미지원)'} · {appliedOptions.linuxcncLatheToolReference ? '보정 경로는 예제 공구표 기준' : '좌표는 프로그램 지령값'}</div>
     <div className="metrics"><div><span>현재 위치 / mm</span><strong>X {fmt(active?.end.x)} <em>Y</em> {fmt(active?.end.y)} <em>Z</em> {fmt(active?.end.z)}</strong></div><div><span>선택된 블록 / 시작점 mm</span><strong>{active ? `${active.motion} · 행 ${active.sourceLine}${active.nBlock ? ` · N${active.nBlock}` : ''} / ${fmt(active.start.x)}, ${fmt(active.start.y)}, ${fmt(active.start.z)}` : '—'}</strong></div><div><span>해석 구간 / 경고 · 선택 블록 단위 / 좌표 모드</span><strong>{result?.segments.length ?? 0} <em>/</em> {result?.warnings.length ?? 0} · {active?.unit ?? '?'} / {active?.distanceMode ?? '?'}</strong></div></div>
    </section></div>
-   <LatheStock key={`lathe-stock-${sourceGeneration}`} result={result} options={appliedOptions} defaultPreset={source===latheThread?'thread-demo':source===latheCycles?'pawn-demo':'standard'}/>
    <NcStock key={`nc-stock-${sourceGeneration}`} source={source} profile={appliedOptions.controllerProfile ?? 'generic'} onExample={()=>{setProfile('generic');run(STOCK_NC,'예제 소재용 NC',undefined,'generic',false,{x:0,y:0,z:12});}}/>
-   <ReferenceMill key={`reference-${sourceGeneration}`} matches={source===subroutines} onSelect={()=>{setProfile('linuxcnc');setUsePointSetup(false);setUseLatheSetup(false);run(subroutines,'useful-subroutines.ngc',undefined,'linuxcnc',true);}}/>
-   <StockExample />
    {result && <PathStats segments={segments} filters={filters} onFiltersChange={setFilters}/>}
    <FileComparison key={`comparison-${sourceGeneration}`} source={source} result={result} options={appliedOptions} />
    {(error || result?.warnings.length) ? <section className="diagnostics" aria-label="해석 진단"><h2>해석 진단 <span>{result?.warnings.length ?? 0}</span></h2>{error && <p>{error}</p>}{result?.warnings.slice(0,100).map(w=><button key={w.id} onClick={()=>selectLine(w.sourceLine)}><b>행 {w.sourceLine}</b> {w.message}</button>)}</section> : null}
